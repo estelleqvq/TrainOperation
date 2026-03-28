@@ -1,5 +1,6 @@
 # views/main_window.py
-from PyQt5.QtWidgets import QMainWindow, QAction, QCheckBox, QVBoxLayout, QWidget, QHBoxLayout
+from PyQt5.QtWidgets import QMainWindow, QAction, QCheckBox, QVBoxLayout, QWidget, QHBoxLayout, QMessageBox, \
+    QInputDialog
 from PyQt5.QtCore import Qt
 from .canvas_widget import TrainGraphCanvas
 
@@ -46,6 +47,15 @@ class MainWindow(QMainWindow):
 
         # 计划图操作
         edit_menu = menubar.addMenu("计划图操作")
+
+        # ================= 新增：车次查询定位菜单项 =================
+        search_action = QAction("🔍 查询定位车次...", self)
+        search_action.triggered.connect(self.open_search_dialog)
+        edit_menu.addAction(search_action)
+
+        edit_menu.addSeparator()
+        # ==========================================================
+
         add_action = QAction("➕ 新增计划线", self)
         add_action.triggered.connect(self.on_add_train)
         edit_menu.addAction(add_action)
@@ -56,7 +66,6 @@ class MainWindow(QMainWindow):
 
         edit_menu.addSeparator()
 
-        # 新增：人工报点菜单
         report_action = QAction("📝 人工报点", self)
         report_action.triggered.connect(self.on_manual_report)
         edit_menu.addAction(report_action)
@@ -85,7 +94,21 @@ class MainWindow(QMainWindow):
         full_schedule_action.triggered.connect(self.on_modify_full_schedule)
         adj_menu.addAction(full_schedule_action)
 
-    # ... [在类的底部新增对应的路由函数] ...
+    # ================= 新增：执行查询的弹窗逻辑 =================
+    def open_search_dialog(self):
+        # 弹出一个简单的输入对话框获取车次号
+        train_num, ok = QInputDialog.getText(self, "车次查询定位", "请输入要查询定位的车次号:")
+
+        if ok and train_num.strip():
+            train_num = train_num.strip()
+            # 调用画布里的查询与平移定位函数
+            success = self.canvas.highlight_and_locate_train(train_num)
+
+            if not success:
+                QMessageBox.information(self, "查询结果", f"未在当前计划库中查询到车次：{train_num}")
+
+    # ============================================================
+
     def on_manual_report(self):
         if self.controller and hasattr(self.controller, 'on_manual_report'):
             self.controller.on_manual_report()
