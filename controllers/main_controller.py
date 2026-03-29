@@ -7,14 +7,9 @@ from models.train_line import TrainLine, TrainLinePoint
 from PyQt5.QtCore import QTime
 from PyQt5.QtWidgets import QMessageBox, QDialog
 
-from views.train_property_dialog import TrainPropertyDialog
-from views.plan_line_param_dialog import PlanLineParamDialog
-from views.modify_train_num_dialog import ModifyTrainNumDialog
-from views.modify_track_dialog import ModifyTrackDialog
-from views.manual_report_dialog import ManualReportDialog  # 引入报点弹窗
-
 from controllers.socket_listener import SocketListenerThread
 from config import SOCKET_PORT
+from controllers.conflict_detector import ConflictDetector
 
 
 class MainController:
@@ -24,14 +19,17 @@ class MainController:
         self.station_name_to_id = {}
         self.section_times = {}
 
-        # 内存中同时维护两条线的数据
         self.plan_lines = []
         self.actual_lines = []
 
         self.socket_thread = None
+        self.conflict_detector = None
 
+        # 核心修改：顺序加载数据，并将字典喂给算法引擎
         self.load_stations()
         self.load_section_times()
+        self.conflict_detector = ConflictDetector(self.stations, self.section_times)
+
         self._reload_lines()
         self.start_socket_listener()
 
@@ -51,7 +49,6 @@ class MainController:
 
     def _reload_lines(self):
         try:
-            # 同时从两个物理库读取
             self.plan_lines = load_plans_from_db('plan')
             self.actual_lines = load_plans_from_db('actual')
 
@@ -61,13 +58,30 @@ class MainController:
         except Exception as e:
             QMessageBox.critical(self.view, "错误", f"加载数据库失败: {e}")
 
+    def validate_new_or_modified_line(self, target_line):
+        if not self.conflict_detector:
+            return True, ""
+        return self.conflict_detector.validate_plan_line(target_line, self.plan_lines)
+
     def on_save(self):
         try:
+            if self.conflict_detector:
+                for line in self.plan_lines:
+                    is_valid, error_msg = self.conflict_detector.validate_plan_line(line, self.plan_lines)
+                    if not is_valid:
+                        QMessageBox.critical(self.view, "保存失败 (冲突拦截)",
+                                             f"无法保存！运行图存在调度冲突：\n\n{error_msg}\n\n请在画布上调整完毕后再行保存。")
+                        return
+
             for line in self.plan_lines:
                 save_plan(line, 'plan')
-            QMessageBox.information(self.view, "成功", "计划运行图已成功保存！")
+            QMessageBox.information(self.view, "成功", "计划运行图已成功保存！目前图定无冲突。")
+
         except Exception as e:
-            QMessageBox.critical(self.view, "错误", f"保存失败: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self.view, "程序异常护盾",
+                                 f"保存过程中发生底层错误:\n{str(e)}\n\n(已拦截系统崩溃，请调整后重试或查看终端日志)")
 
     def on_delete(self):
         selected_line = getattr(self.view.canvas, 'selected_line', None)
@@ -86,11 +100,12 @@ class MainController:
                 if train_line in self.plan_lines:
                     self.plan_lines.remove(train_line)
                 self.view.canvas.selected_line = None
-                self._reload_lines()  # 重新拉取以防实际库有遗留
+                self._reload_lines()
             except Exception as e:
                 QMessageBox.critical(self.view, "错误", f"删除失败: {e}")
 
     def open_train_property_dialog(self, train_line=None):
+        from views.train_property_dialog import TrainPropertyDialog
         dialog = TrainPropertyDialog(self.view, self.stations, self.section_times, train_line)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
@@ -124,11 +139,12 @@ class MainController:
         self.open_train_property_dialog(selected_line)
 
     def open_plan_line_param_dialog(self, train_line=None, station_id=None):
+        from views.plan_line_param_dialog import PlanLineParamDialog
         if not train_line:
             train_line = getattr(self.view.canvas, 'selected_line', None)
             if not train_line: return
 
-        dialog = PlanLineParamDialog(self.view, train_line, self.stations, station_id)
+        dialog = PlanLineParamDialog(self, train_line, self.stations, station_id)
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             target_station_id = data['station_id']
@@ -149,6 +165,7 @@ class MainController:
             self.detect_and_draw_conflicts()
 
     def open_modify_track_dialog(self, train_line=None, station_id=None):
+        from views.modify_track_dialog import ModifyTrackDialog
         if not train_line:
             train_line = getattr(self.view.canvas, 'selected_line', None)
             if not train_line: return
@@ -162,6 +179,7 @@ class MainController:
             self.detect_and_draw_conflicts()
 
     def open_modify_train_num_dialog(self, train_line=None):
+        from views.modify_train_num_dialog import ModifyTrainNumDialog
         if not train_line:
             train_line = getattr(self.view.canvas, 'selected_line', None)
             if not train_line: return
@@ -173,15 +191,14 @@ class MainController:
             self.view.canvas.update_lines()
             self.detect_and_draw_conflicts()
 
-    # ============ 处理人工打点并落盘实迹库 ============
     def open_manual_report_dialog(self, train_line=None, station_id=None):
+        from views.manual_report_dialog import ManualReportDialog
         if not train_line:
             train_line = getattr(self.view.canvas, 'selected_line', None)
             if not train_line:
                 QMessageBox.warning(self.view, "提示", "请先在画布上点击选中一条列车线！")
                 return
 
-        # 尝试从 actual_lines 中寻找该车的实迹数据，传给弹窗以供回显
         actual_train = next((t for t in self.actual_lines if t.train_number == train_line.train_number), None)
 
         dialog = ManualReportDialog(self.view, train_line, self.stations, actual_train, station_id)
@@ -189,19 +206,17 @@ class MainController:
             st_id, track, act_arr, act_dep = dialog.get_data()
             try:
                 save_manual_report(train_line.train_number, train_line.direction, train_line.date, st_id, track,
-                                       act_arr, act_dep)
+                                   act_arr, act_dep)
                 self._reload_lines()
             except Exception as e:
                 QMessageBox.critical(self.view, "数据库错误", f"报点失败: {e}")
 
     def on_manual_report(self):
-        """顶部菜单的人工报点入口"""
         self.open_manual_report_dialog()
-
 
     def detect_and_draw_conflicts(self):
         conflicts = []
-        lines = self.plan_lines  # 冲突检测基于计划库
+        lines = self.plan_lines
 
         def qtime_to_mins(qt):
             return qt.hour() * 60 + qt.minute() if qt else None
@@ -256,4 +271,4 @@ class MainController:
         self.socket_thread.start()
 
     def handle_socket_data(self, data):
-        pass  # 后续若需真实接入物理沙盘再开放此接口
+        pass

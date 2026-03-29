@@ -1,6 +1,7 @@
 # views/canvas_widget.py
 import sys
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsPathItem, QMenu
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsPathItem, QMenu, \
+    QGraphicsItem
 from PyQt5.QtCore import Qt, QTime, QRectF
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPainterPath, QBrush, QPainterPathStroker
 
@@ -221,6 +222,7 @@ class TrainGraphCanvas(QGraphicsView):
             orig_y = station.y_coord - 10
             text.setPos(orig_x, orig_y)
             text.setData(1, orig_y)
+            text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             text.setZValue(30)
             self.scene.addItem(text)
             self.station_texts.append(text)
@@ -238,6 +240,7 @@ class TrainGraphCanvas(QGraphicsView):
             orig_y = time_axis_y - 25
             text_top.setPos(orig_x, orig_y)
             text_top.setData(1, orig_x)
+            text_top.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
             text_top.setZValue(30)
             self.scene.addItem(text_top)
             self.time_texts.append(text_top)
@@ -257,24 +260,21 @@ class TrainGraphCanvas(QGraphicsView):
         if self.show_actual_lines and hasattr(self.controller, 'actual_lines'):
             self.draw_actual_lines(self.controller.actual_lines)
 
+    # =============== 核心修改：已完全复原到最原始的字体与坐标逻辑 ===============
     def draw_train_lines(self, train_lines, is_actual=False):
         for line_data in train_lines:
             line_data.handles = []
 
             is_selected = (line_data == getattr(self, 'selected_line', None))
             is_highlighted = (line_data == getattr(self, 'highlighted_line', None))
-            is_important = is_selected or is_highlighted
 
+            # 保留你的红色高亮需求
             if is_highlighted:
                 base_color = QColor(255, 0, 0)
                 pen_width = 4
-                z_line = 10
-                z_text = 11
             else:
                 base_color = getattr(line_data, 'color', QColor(255, 0, 0))
                 pen_width = 3 if is_selected else 1
-                z_line = 5 if is_selected else 3
-                z_text = 6 if is_selected else 4
 
             line_pen = QPen(base_color, pen_width, Qt.SolidLine)
 
@@ -294,10 +294,11 @@ class TrainGraphCanvas(QGraphicsView):
 
             is_down_train = first_y < last_y
 
+            # 彻底复原了这里的位置变量
             if is_down_train:
                 dy_start = -8
                 dy_end = 10
-                y_offset_text = -20
+                y_offset_text = -22
             else:
                 dy_start = 8
                 dy_end = -10
@@ -334,13 +335,14 @@ class TrainGraphCanvas(QGraphicsView):
                     start_coord = (x_dep, y)
                     first_point_drawn = True
 
+                    # 彻底复原：车次号文本
                     text = QGraphicsSimpleTextItem(line_data.train_number)
                     font = QFont("Arial", 8, QFont.Bold)
-                    if is_important: font.setPointSize(9)
+                    if is_selected or is_highlighted: font.setPointSize(9)
                     text.setFont(font)
                     text.setBrush(QBrush(base_color))
                     text.setPos(x_dep + 3, y + y_offset_text)
-                    text.setZValue(z_text)
+                    text.setZValue(4)
                     text.setData(0, line_data)
                     self.scene.addItem(text)
                     self.train_line_items.append(text)
@@ -357,7 +359,7 @@ class TrainGraphCanvas(QGraphicsView):
                                 handle_size = 6
                                 rect_pass = QRectF(sx - handle_size / 2, sy - handle_size / 2, handle_size, handle_size)
                                 item_pass = self.scene.addRect(rect_pass, QPen(Qt.black, 1), QBrush(Qt.white))
-                                item_pass.setZValue(z_line + 1)
+                                item_pass.setZValue(5)
                                 item_pass.setData(0, line_data)
                                 self.train_line_items.append(item_pass)
 
@@ -368,13 +370,14 @@ class TrainGraphCanvas(QGraphicsView):
                                     'station_id': station.id, 'point_ref': None, 'time': s_time
                                 })
 
+                            # 彻底复原：区间通过车站的分钟数
                             digit = str(int(round(prev_min_dep + ratio * (min_arr - prev_min_dep))) % 10)
                             font_digit = QFont("Arial", 7)
                             text_digit = QGraphicsSimpleTextItem(digit)
                             text_digit.setFont(font_digit)
                             text_digit.setBrush(QBrush(base_color))
                             text_digit.setPos(sx + 2, sy - 14 if is_down_train else sy + 2)
-                            text_digit.setZValue(z_text)
+                            text_digit.setZValue(4)
                             self.scene.addItem(text_digit)
                             self.train_line_items.append(text_digit)
 
@@ -391,7 +394,7 @@ class TrainGraphCanvas(QGraphicsView):
                     if t_arr and not is_start:
                         rect_arr = QRectF(x_arr - handle_size / 2, y - handle_size / 2, handle_size, handle_size)
                         item_arr = self.scene.addRect(rect_arr, QPen(Qt.black, 1), QBrush(Qt.white))
-                        item_arr.setZValue(z_line + 1)
+                        item_arr.setZValue(5)
                         item_arr.setData(0, line_data)
                         self.train_line_items.append(item_arr)
                         line_data.handles.append(
@@ -405,7 +408,7 @@ class TrainGraphCanvas(QGraphicsView):
                         else:
                             rect_dep = QRectF(x_dep - handle_size / 2, y - handle_size / 2, handle_size, handle_size)
                             item_dep = self.scene.addRect(rect_dep, QPen(Qt.black, 1), QBrush(Qt.white))
-                            item_dep.setZValue(z_line + 1)
+                            item_dep.setZValue(5)
                             item_dep.setData(0, line_data)
                             self.train_line_items.append(item_dep)
                             line_data.handles.append(
@@ -420,24 +423,19 @@ class TrainGraphCanvas(QGraphicsView):
                         text_digit = QGraphicsSimpleTextItem(digit)
                         text_digit.setFont(font_digit)
                         text_digit.setBrush(QBrush(base_color))
-                        # 通过列车：下行右上角，上行右下角
-                        px = x_arr + 2
-                        py = y - 14 if is_down_train else y + 2
-                        text_digit.setPos(px, py)
-                        text_digit.setZValue(z_text)
+                        text_digit.setPos(x_arr + 2, y - 14 if is_down_train else y + 2)
+                        text_digit.setZValue(4)
                         self.scene.addItem(text_digit)
                         self.train_line_items.append(text_digit)
                 else:
                     if t_arr:
+                        # 彻底复原：到达与发车分钟数原始坐标位置
                         arr_digit = str(t_arr.minute() % 10)
                         text_arr = QGraphicsSimpleTextItem(arr_digit)
                         text_arr.setFont(font_digit)
                         text_arr.setBrush(QBrush(base_color))
-                        # 核心修改：放在锐角处 (下行左下方，上行左上方) 避免与线重叠
-                        ax = x_arr - 10
-                        ay = y + 2 if is_down_train else y - 14
-                        text_arr.setPos(ax, ay)
-                        text_arr.setZValue(z_text)
+                        text_arr.setPos(x_arr + 2, y - 14 if is_down_train else y + 2)
+                        text_arr.setZValue(4)
                         self.scene.addItem(text_arr)
                         self.train_line_items.append(text_arr)
                     if t_dep:
@@ -445,11 +443,8 @@ class TrainGraphCanvas(QGraphicsView):
                         text_dep = QGraphicsSimpleTextItem(dep_digit)
                         text_dep.setFont(font_digit)
                         text_dep.setBrush(QBrush(base_color))
-                        # 核心修改：放在锐角处 (下行右上方，上行右下方)
-                        dx = x_dep + 2
-                        dy_text = y - 14 if is_down_train else y + 2
-                        text_dep.setPos(dx, dy_text)
-                        text_dep.setZValue(z_text)
+                        text_dep.setPos(x_dep - 8, y + 2 if is_down_train else y - 14)
+                        text_dep.setZValue(4)
                         self.scene.addItem(text_dep)
                         self.train_line_items.append(text_dep)
 
@@ -462,28 +457,28 @@ class TrainGraphCanvas(QGraphicsView):
                 hit_path = QPainterPathStroker()
                 hit_path.setWidth(10)
                 shape_path = hit_path.createStroke(path)
-                path_item.setZValue(z_line)
+                path_item.setZValue(3)
                 path_item.setData(0, line_data)
                 self.train_line_items.append(path_item)
 
                 if start_coord:
                     cx, cy = start_coord
-                    t_width = 12 if is_important else 10
+                    t_width = 12 if (is_selected or is_highlighted) else 10
                     v_line1 = self.scene.addLine(cx, cy, cx, cy + dy_start, line_pen)
-                    v_line1.setZValue(z_line)
+                    v_line1.setZValue(3)
                     v_line1.setData(0, line_data)
                     self.train_line_items.append(v_line1)
                     t_line = self.scene.addLine(cx - t_width / 2, cy + dy_start, cx + t_width / 2, cy + dy_start,
                                                 QPen(base_color, pen_width + 1, Qt.SolidLine))
-                    t_line.setZValue(z_line + 1)
+                    t_line.setZValue(4)
                     t_line.setData(0, line_data)
                     self.train_line_items.append(t_line)
 
                 if end_coord and start_coord:
                     ex, ey = end_coord
-                    arrow_size = 10 if is_important else 8
+                    arrow_size = 10 if (is_selected or is_highlighted) else 8
                     v_line2 = self.scene.addLine(ex, ey, ex, ey + dy_end, line_pen)
-                    v_line2.setZValue(z_line)
+                    v_line2.setZValue(3)
                     v_line2.setData(0, line_data)
                     self.train_line_items.append(v_line2)
 
@@ -500,8 +495,11 @@ class TrainGraphCanvas(QGraphicsView):
                     arrow_path.closeSubpath()
 
                     arrow_item = self.scene.addPath(arrow_path, QPen(base_color, 1),
-                                                    QBrush(Qt.white if not is_important else QColor(255, 200, 200)))
-                    arrow_item.setZValue(z_line + 1)
+                                                    QBrush(
+                                                        Qt.white if not (is_selected or is_highlighted) else QColor(255,
+                                                                                                                    200,
+                                                                                                                    200)))
+                    arrow_item.setZValue(4)
                     arrow_item.setData(0, line_data)
                     self.train_line_items.append(arrow_item)
 
@@ -529,7 +527,7 @@ class TrainGraphCanvas(QGraphicsView):
             if is_down_train:
                 dy_start = -8
                 dy_end = 10
-                y_offset_text = -20
+                y_offset_text = -22
             else:
                 dy_start = 8
                 dy_end = -10
@@ -716,6 +714,7 @@ class TrainGraphCanvas(QGraphicsView):
                 if self.controller and hasattr(self.controller, 'on_add_train'):
                     self.controller.on_add_train()
 
+    # =============== 彻底复原：完全移除拖拽中断和弹窗，回归原生安全滑动 ===============
     def mousePressEvent(self, event):
         if self.highlighted_line:
             self.highlighted_line = None

@@ -5,8 +5,9 @@ from PyQt5.QtCore import QTime
 
 
 class PlanLineParamDialog(QDialog):
-    def __init__(self, parent, train_line, stations, initial_station_id=None):
-        super().__init__(parent)
+    def __init__(self, controller, train_line, stations, initial_station_id=None):
+        super().__init__(controller.view)
+        self.controller = controller
         self.train_line = train_line
         self.stations = stations
         self.initial_station_id = initial_station_id
@@ -17,10 +18,10 @@ class PlanLineParamDialog(QDialog):
 
     def init_ui(self):
         self.setWindowTitle("修改计划线参数")
-        self.resize(360, 280)  # 移除了股道区，高度收紧
+        self.resize(360, 280)
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)  # 增加模块间距
-        layout.setContentsMargins(20, 20, 20, 20)  # 增加内边距使四周留白更美观
+        layout.setSpacing(15)
+        layout.setContentsMargins(20, 20, 20, 20)
 
         # ================= 1. 图定信息区 =================
         group_info = QGroupBox("1. 图定信息")
@@ -77,7 +78,7 @@ class PlanLineParamDialog(QDialog):
         btn_layout = QHBoxLayout()
         self.btn_save = QPushButton("确定修改")
         self.btn_save.setMinimumHeight(30)
-        self.btn_save.clicked.connect(self.accept)
+        self.btn_save.clicked.connect(self.on_save_clicked)
 
         self.btn_cancel = QPushButton("取消")
         self.btn_cancel.setMinimumHeight(30)
@@ -117,5 +118,9 @@ class PlanLineParamDialog(QDialog):
             "station_id": self.cb_station.currentData(),
             "target_arrival": self.le_target_arr.text().strip(),
             "target_departure": self.le_target_dep.text().strip()
-            # 移除了 track 字段
         }
+
+    # ================= 移除拦截，回归纯净更新 =================
+    def on_save_clicked(self):
+        # 仅将数据写入内存模型关闭弹窗，交给上层把控入库
+        self.accept()
