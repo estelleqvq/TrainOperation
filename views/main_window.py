@@ -48,66 +48,67 @@ class MainWindow(QMainWindow):
         # 计划图操作
         edit_menu = menubar.addMenu("计划图操作")
 
-        # ================= 新增：车次查询定位菜单项 =================
-        search_action = QAction("🔍 查询定位车次...", self)
+        search_action = QAction("查询定位车次...", self)
         search_action.triggered.connect(self.open_search_dialog)
         edit_menu.addAction(search_action)
 
         edit_menu.addSeparator()
-        # ==========================================================
 
-        add_action = QAction("➕ 新增计划线", self)
+        add_action = QAction("新增计划线", self)
         add_action.triggered.connect(self.on_add_train)
         edit_menu.addAction(add_action)
 
-        delete_action = QAction("❌ 删除选定线", self)
+        delete_action = QAction("删除选定线", self)
         delete_action.triggered.connect(self.on_delete)
         edit_menu.addAction(delete_action)
 
         edit_menu.addSeparator()
 
-        report_action = QAction("📝 人工报点", self)
+        report_action = QAction("人工报点", self)
         report_action.triggered.connect(self.on_manual_report)
         edit_menu.addAction(report_action)
 
         edit_menu.addSeparator()
-        save_action = QAction("💾 保存计划运行图", self)
+        save_action = QAction("保存计划运行图", self)
         save_action.triggered.connect(self.on_save)
         edit_menu.addAction(save_action)
 
         # 运行图调整
         adj_menu = menubar.addMenu("运行图调整")
-        param_action = QAction("⚙️ 修改计划线参数", self)
+        param_action = QAction("修改计划线参数", self)
         param_action.triggered.connect(self.on_modify_plan_line_param)
         adj_menu.addAction(param_action)
 
-        track_action = QAction("🛤️ 修改股道", self)
+        track_action = QAction("修改接发车股道", self)
         track_action.triggered.connect(self.on_modify_track)
         adj_menu.addAction(track_action)
 
-        train_num_action = QAction("🏷️ 修改车次号", self)
+        train_num_action = QAction("修改车次号", self)
         train_num_action.triggered.connect(self.on_modify_train_num)
         adj_menu.addAction(train_num_action)
 
         adj_menu.addSeparator()
-        full_schedule_action = QAction("🕒 修改全线时刻表", self)
+        full_schedule_action = QAction("修改全线时刻表", self)
         full_schedule_action.triggered.connect(self.on_modify_full_schedule)
         adj_menu.addAction(full_schedule_action)
 
-    # ================= 新增：执行查询的弹窗逻辑 =================
-    def open_search_dialog(self):
-        # 弹出一个简单的输入对话框获取车次号
-        train_num, ok = QInputDialog.getText(self, "车次查询定位", "请输入要查询定位的车次号:")
+        # 智能辅助决策
+        ai_menu = menubar.addMenu("智能辅助决策")
+        delay_action = QAction("模拟突发晚点 (触发 GA 调整)...", self)
+        delay_action.triggered.connect(self.on_simulate_delay)
+        ai_menu.addAction(delay_action)
 
+    def open_search_dialog(self):
+        train_num, ok = QInputDialog.getText(self, "车次查询定位", "请输入要查询定位的车次号:")
         if ok and train_num.strip():
             train_num = train_num.strip()
-            # 调用画布里的查询与平移定位函数
             success = self.canvas.highlight_and_locate_train(train_num)
-
             if not success:
                 QMessageBox.information(self, "查询结果", f"未在当前计划库中查询到车次：{train_num}")
 
-    # ============================================================
+    def on_simulate_delay(self):
+        if self.controller and hasattr(self.controller, 'on_simulate_delay'):
+            self.controller.on_simulate_delay()
 
     def on_manual_report(self):
         if self.controller and hasattr(self.controller, 'on_manual_report'):

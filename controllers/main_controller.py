@@ -6,9 +6,8 @@ from models.station import Station
 from models.train_line import TrainLine, TrainLinePoint
 from PyQt5.QtCore import QTime
 from PyQt5.QtWidgets import QMessageBox, QDialog
+from PyQt5.QtGui import QColor
 
-from controllers.socket_listener import SocketListenerThread
-from config import SOCKET_PORT
 from controllers.conflict_detector import ConflictDetector
 
 
@@ -22,7 +21,6 @@ class MainController:
         self.plan_lines = []
         self.actual_lines = []
 
-        self.socket_thread = None
         self.conflict_detector = None
 
         # 核心修改：顺序加载数据，并将字典喂给算法引擎
@@ -31,7 +29,6 @@ class MainController:
         self.conflict_detector = ConflictDetector(self.stations, self.section_times)
 
         self._reload_lines()
-        self.start_socket_listener()
 
     def load_stations(self):
         try:
@@ -264,11 +261,116 @@ class MainController:
 
         self.view.canvas.draw_conflicts(conflicts)
 
-    def start_socket_listener(self):
-        port = SOCKET_PORT if SOCKET_PORT != 3306 else 9999
-        self.socket_thread = SocketListenerThread(port)
-        self.socket_thread.data_received.connect(self.handle_socket_data)
-        self.socket_thread.start()
+    def _clone_lines(self, lines):
+        new_lines = []
+        for l in lines:
+            new_pts = []
+            for p in l.points:
+                arr = QTime(p.planned_arrival.hour(), p.planned_arrival.minute()) if p.planned_arrival else None
+                dep = QTime(p.planned_departure.hour(), p.planned_departure.minute()) if p.planned_departure else None
+                new_pt = TrainLinePoint(p.station_id, arr, dep, p.track)
+                new_pts.append(new_pt)
+            new_l = TrainLine(l.id, l.train_number, l.direction, l.date, new_pts)
+            new_lines.append(new_l)
+        return new_lines
 
-    def handle_socket_data(self, data):
-        pass
+    def _add_mins_to_qtime(self, qt, mins):
+        if not qt: return None
+        total = qt.hour() * 60 + qt.minute() + mins
+        return QTime((total // 60) % 24, total % 60)
+
+    def on_simulate_delay(self):
+        from views.delay_simulation_dialog import DelaySimulationDialog
+        from controllers.ga_optimizer import GAOptimizer
+
+        dialog = DelaySimulationDialog(self.view, self.plan_lines, self.stations)
+        if dialog.exec_() == QDialog.Accepted:
+            data = dialog.get_data()
+            target_train_num = data['train_num']
+            station_id = data['station_id']
+            delay_mins = data['delay_mins']
+
+            # 1. 建立临时草稿本
+            temp_lines = self._clone_lines(self.plan_lines)
+
+            # 2. 对目标列车施加初始晚点
+            target_train = next((t for t in temp_lines if t.train_number == target_train_num), None)
+            if not target_train: return
+
+            target_pt_idx = next((i for i, p in enumerate(target_train.points) if p.station_id == station_id), -1)
+            if target_pt_idx == -1 or target_pt_idx == len(target_train.points) - 1:
+                QMessageBox.warning(self.view, "提示", "所选车站为终点站或无效，无需向后调整。")
+                return
+
+            target_pt = target_train.points[target_pt_idx]
+            next_station_id = target_train.points[target_pt_idx + 1].station_id
+
+            target_pt.planned_arrival = self._add_mins_to_qtime(target_pt.planned_arrival, delay_mins)
+            if target_pt.planned_departure:
+                target_pt.planned_departure = self._add_mins_to_qtime(target_pt.planned_departure, delay_mins)
+            else:
+                target_pt.planned_departure = self._add_mins_to_qtime(target_pt.planned_arrival, 2)
+
+            # 3. 筛选可能受波及的列车（同方向通过该站的列车）
+            target_is_down = target_train.points[0].station_id < target_train.points[-1].station_id
+            affected_trains = []
+            for t in temp_lines:
+                is_down = t.points[0].station_id < t.points[-1].station_id
+                if is_down == target_is_down:
+                    pt = next((p for p in t.points if p.station_id == station_id), None)
+                    if pt and pt.planned_departure:
+                        affected_trains.append(t)
+
+            # 将列车按原计划发车时间排序送入 GA 引擎
+            def get_dep_mins(tr):
+                p = next((x for x in tr.points if x.station_id == station_id), None)
+                return p.planned_departure.hour() * 60 + p.planned_departure.minute()
+
+            affected_trains.sort(key=get_dep_mins)
+
+            # 4. 点火！调用 GA 引擎进行排队求解
+            optimizer = GAOptimizer(self.stations, self.section_times)
+            optimized_trains = optimizer.optimize_dispatch_order(station_id, next_station_id, affected_trains)
+
+            # 5. 根据算法给出的最优顺序，进行时间推演及延迟连锁传播
+            last_departure_mins = -999
+            for t in optimized_trains:
+                curr_p = next(p for p in t.points if p.station_id == station_id)
+                next_p = next(p for p in t.points if p.station_id == next_station_id)
+
+                ready_to_dep = curr_p.planned_departure.hour() * 60 + curr_p.planned_departure.minute()
+                # 依据硬约束：前后车发车时间至少间隔 3 分钟
+                actual_dep_mins = max(ready_to_dep, last_departure_mins + 3)
+
+                extra_delay = actual_dep_mins - ready_to_dep  # 计算被算法向后挤压的额外延误
+
+                curr_p.planned_departure = QTime(actual_dep_mins // 60, actual_dep_mins % 60)
+                last_departure_mins = actual_dep_mins
+
+                # 将额外延误沿途施加到该车后续的所有经停站，实现完整的运行线平移
+                idx = t.points.index(next_p)
+                for j in range(idx, len(t.points)):
+                    p = t.points[j]
+                    p.planned_arrival = self._add_mins_to_qtime(p.planned_arrival, extra_delay)
+                    p.planned_departure = self._add_mins_to_qtime(p.planned_departure, extra_delay)
+
+            # 6. 展示结果：把波及的调整线标为紫色，替换到屏幕上预览
+            original_lines = self.plan_lines
+            self.plan_lines = temp_lines
+            for t in self.plan_lines:
+                if t in affected_trains:
+                    t.color = QColor(255, 0, 255)  # 临时紫色高亮
+            self.view.canvas.update_lines()
+
+            # 7. 弹窗询问是否落盘
+            reply = QMessageBox.question(self.view, "智能调整完成",
+                                         f"遗传算法(GA)已完成局部运行图重排。\n屏幕上紫色线条为调整后的临时方案，是否应用并写入数据库？")
+
+            if reply == QMessageBox.Yes:
+                for t in self.plan_lines:  # 清除紫色高亮，回归红/蓝常态
+                    if hasattr(t, 'color'): del t.color
+                self.view.canvas.update_lines()
+                self.on_save()  # 触发之前的保存拦截机制并落库
+            else:
+                self.plan_lines = original_lines  # 取消，销毁草稿本
+                self.view.canvas.update_lines()
