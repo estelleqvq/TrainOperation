@@ -11,7 +11,7 @@ class DelaySimulationDialog(QDialog):
         self.init_ui()
 
     def init_ui(self):
-        self.setWindowTitle("模拟突发晚点与智能调整")
+        self.setWindowTitle("模拟突发晚点")
         self.resize(320, 200)
         layout = QVBoxLayout(self)
 
@@ -28,9 +28,9 @@ class DelaySimulationDialog(QDialog):
 
         self.sb_delay = QSpinBox()
         self.sb_delay.setRange(1, 300)
-        self.sb_delay.setValue(30)  # 默认晚点30分钟
-        self.sb_delay.setSuffix(" 分钟")
-        form.addRow("输入晚点时长:", self.sb_delay)
+        self.sb_delay.setValue(30)
+        self.sb_delay.setSuffix("")
+        form.addRow("输入晚点时长(分):", self.sb_delay)
 
         layout.addLayout(form)
 

@@ -3,7 +3,6 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
                              QPushButton, QHBoxLayout, QGroupBox, QLabel, QComboBox)
 from PyQt5.QtCore import QTime
 
-
 class PlanLineParamDialog(QDialog):
     def __init__(self, controller, train_line, stations, initial_station_id=None):
         super().__init__(controller.view)
@@ -23,8 +22,7 @@ class PlanLineParamDialog(QDialog):
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # ================= 1. 图定信息区 =================
-        group_info = QGroupBox("1. 图定信息")
+        group_info = QGroupBox("图定信息")
         group_info.setStyleSheet("QGroupBox { font-weight: bold; margin-top: 1ex; } "
                                  "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         form_info = QFormLayout()
@@ -54,27 +52,25 @@ class PlanLineParamDialog(QDialog):
         group_info.setLayout(form_info)
         layout.addWidget(group_info)
 
-        # ================= 2. 输入参数区 =================
-        group_input = QGroupBox("2. 输入参数 (目标调整)")
+        group_input = QGroupBox("输入参数")
         group_input.setStyleSheet("QGroupBox { font-weight: bold; margin-top: 1ex; } "
                                   "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         form_input = QFormLayout()
         form_input.setSpacing(10)
 
         self.le_target_arr = QLineEdit()
-        self.le_target_arr.setPlaceholderText("HH:mm")
+        self.le_target_arr.setPlaceholderText("")
         self.le_target_arr.setStyleSheet("padding: 3px;")
         form_input.addRow("目标到达时间:", self.le_target_arr)
 
         self.le_target_dep = QLineEdit()
-        self.le_target_dep.setPlaceholderText("HH:mm")
+        self.le_target_dep.setPlaceholderText("")
         self.le_target_dep.setStyleSheet("padding: 3px;")
         form_input.addRow("目标出发时间:", self.le_target_dep)
 
         group_input.setLayout(form_input)
         layout.addWidget(group_input)
 
-        # ================= 底部按钮 =================
         btn_layout = QHBoxLayout()
         self.btn_save = QPushButton("确定修改")
         self.btn_save.setMinimumHeight(30)
@@ -120,7 +116,5 @@ class PlanLineParamDialog(QDialog):
             "target_departure": self.le_target_dep.text().strip()
         }
 
-    # ================= 移除拦截，回归纯净更新 =================
     def on_save_clicked(self):
-        # 仅将数据写入内存模型关闭弹窗，交给上层把控入库
         self.accept()

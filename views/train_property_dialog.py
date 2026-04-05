@@ -1,13 +1,12 @@
 # views/train_property_dialog.py
-
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
-                             QPushButton, QHeaderView, QGridLayout, QGroupBox, QMessageBox)
+                             QPushButton, QHeaderView, QGridLayout, QGroupBox, QMessageBox, QCheckBox, QWidget,
+                             QSpinBox)
 from PyQt5.QtCore import Qt, QTime
 
 
 class TrainPropertyDialog(QDialog):
-    # 【核心修改】接收 section_times 字典
     def __init__(self, parent, stations, section_times, train_line=None):
         super().__init__(parent)
         self.stations = stations
@@ -17,7 +16,7 @@ class TrainPropertyDialog(QDialog):
         self.populate_data()
 
     def init_ui(self):
-        self.setWindowTitle("列车属性与时刻表 (CTC 自动排线版)")
+        self.setWindowTitle("列车属性与时刻表")
         self.resize(850, 650)
         layout = QVBoxLayout(self)
 
@@ -28,7 +27,6 @@ class TrainPropertyDialog(QDialog):
 
         basic_layout.addWidget(QLabel("车次号:"), 0, 0)
         self.le_train_number = QLineEdit()
-        self.le_train_number.setPlaceholderText("如: G143")
         basic_layout.addWidget(self.le_train_number, 0, 1)
 
         basic_layout.addWidget(QLabel("方向:"), 0, 2)
@@ -47,7 +45,6 @@ class TrainPropertyDialog(QDialog):
 
         basic_layout.addWidget(QLabel("始发时间:"), 1, 2)
         self.le_start_time = QLineEdit()
-        self.le_start_time.setPlaceholderText("HH:mm (出发)")
         basic_layout.addWidget(self.le_start_time, 1, 3)
 
         basic_layout.addWidget(QLabel("终到站:"), 2, 0)
@@ -57,29 +54,26 @@ class TrainPropertyDialog(QDialog):
 
         basic_layout.addWidget(QLabel("终到时间:"), 2, 2)
         self.le_end_time = QLineEdit()
-        self.le_end_time.setPlaceholderText("自动计算或手填")
         basic_layout.addWidget(self.le_end_time, 2, 3)
 
-        # 智能排线按钮
         self.btn_sync_time = QPushButton("智能排线")
         self.btn_sync_time.setStyleSheet("background-color: #e3f2fd; font-weight: bold; color: #0d47a1;")
-        self.btn_sync_time.setToolTip("根据始发时间和区间标准运行时分，自动推算沿途所有车站的通过时间")
         self.btn_sync_time.clicked.connect(self.sync_top_to_table)
         basic_layout.addWidget(self.btn_sync_time, 1, 4, 2, 2)
 
         group_basic.setLayout(basic_layout)
         layout.addWidget(group_basic)
 
-        group_schedule = QGroupBox("列车时刻表详细信息")
+        group_schedule = QGroupBox("列车时刻表")
         group_schedule.setStyleSheet("QGroupBox { font-weight: bold; margin-top: 1ex; } "
                                      "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         schedule_layout = QVBoxLayout()
 
         self.table = QTableWidget(len(self.stations), 6)
         self.table.setHorizontalHeaderLabels(
-            ["车站名称", "接发股道", "计划到达", "计划出发", "实际到达", "实际出发"]
+            ["车站名称", "办理客运", "停站时长", "接发股道", "计划到达", "计划出发"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         schedule_layout.addWidget(self.table)
 
         group_schedule.setLayout(schedule_layout)
@@ -127,28 +121,37 @@ class TrainPropertyDialog(QDialog):
             plan_arr = p.planned_arrival.toString("HH:mm") if p and p.planned_arrival else ""
             plan_dep = p.planned_departure.toString("HH:mm") if p and p.planned_departure else ""
 
-            act_arr_obj = getattr(p, 'actual_arrival', None) if p else None
-            act_dep_obj = getattr(p, 'actual_departure', None) if p else None
-            act_arr = act_arr_obj.toString("HH:mm") if act_arr_obj else ""
-            act_dep = act_dep_obj.toString("HH:mm") if act_dep_obj else ""
+            is_stop = False
+            duration = 2
+            if plan_arr and plan_dep and plan_arr != plan_dep:
+                is_stop = True
+                duration = p.planned_arrival.secsTo(p.planned_departure) // 60
+                if duration <= 0: duration = 2
+
+            if i == 0 or i == len(self.stations) - 1:
+                is_stop = True
+
+            cb_stop = QCheckBox()
+            cb_stop.setChecked(is_stop)
+            chk_widget = QWidget()
+            chk_layout = QHBoxLayout(chk_widget)
+            chk_layout.addWidget(cb_stop)
+            chk_layout.setAlignment(Qt.AlignCenter)
+            chk_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(i, 1, chk_widget)
+
+            sb_duration = QSpinBox()
+            sb_duration.setRange(1, 60)
+            sb_duration.setValue(duration)
+            self.table.setCellWidget(i, 2, sb_duration)
 
             cb_track = QComboBox()
             cb_track.addItems(station.tracks)
             cb_track.setCurrentText(track)
-            self.table.setCellWidget(i, 1, cb_track)
+            self.table.setCellWidget(i, 3, cb_track)
 
-            self.table.setItem(i, 2, QTableWidgetItem(plan_arr))
-            self.table.setItem(i, 3, QTableWidgetItem(plan_dep))
-
-            item_act_arr = QTableWidgetItem(act_arr)
-            item_act_arr.setForeground(Qt.blue)
-            item_act_arr.setFont(self._bold_font())
-            self.table.setItem(i, 4, item_act_arr)
-
-            item_act_dep = QTableWidgetItem(act_dep)
-            item_act_dep.setForeground(Qt.blue)
-            item_act_dep.setFont(self._bold_font())
-            self.table.setItem(i, 5, item_act_dep)
+            self.table.setItem(i, 4, QTableWidgetItem(plan_arr))
+            self.table.setItem(i, 5, QTableWidgetItem(plan_dep))
 
         if first_valid_point:
             start_st = next((s for s in self.stations if s.id == first_valid_point.station_id), None)
@@ -163,21 +166,19 @@ class TrainPropertyDialog(QDialog):
                 self.le_end_time.setText(last_valid_point.planned_arrival.toString("HH:mm"))
 
     def sync_top_to_table(self):
-        """【核心功能】：基于区间运行时分，自动排线推演全线时刻"""
         start_name = self.cb_start_station.currentText()
         end_name = self.cb_end_station.currentText()
         start_time_str = self.le_start_time.text().strip()
 
         if not start_time_str:
-            QMessageBox.warning(self, "操作错误", "请先输入始发时间！")
+            QMessageBox.warning(self, "逻辑错误", "请输入始发时间")
             return
 
         current_time = QTime.fromString(start_time_str, "HH:mm")
         if not current_time.isValid():
-            QMessageBox.warning(self, "格式错误", "时间格式有误，请输入标准的 HH:mm 格式，例如 08:30")
+            QMessageBox.warning(self, "格式错误", "时间格式有误")
             return
 
-        # 1. 寻找始发站和终到站在表格中的行号
         start_idx = -1
         end_idx = -1
         for i, s in enumerate(self.stations):
@@ -185,47 +186,48 @@ class TrainPropertyDialog(QDialog):
             if s.name == end_name: end_idx = i
 
         if start_idx == -1 or end_idx == -1 or start_idx == end_idx:
-            QMessageBox.warning(self, "逻辑错误", "始发站和终到站不能相同！")
+            QMessageBox.warning(self, "逻辑错误", "始发站和终到站配置有误")
             return
 
-        # 2. 清空旧的计划时间
         for i in range(self.table.rowCount()):
-            self.table.setItem(i, 2, QTableWidgetItem(""))
-            self.table.setItem(i, 3, QTableWidgetItem(""))
+            self.table.setItem(i, 4, QTableWidgetItem(""))
+            self.table.setItem(i, 5, QTableWidgetItem(""))
 
-        # 3. 确定方向：从上往下是下行(DOWN)，从下往上是上行(UP)
         step = 1 if start_idx < end_idx else -1
         self.cb_direction.setCurrentText("DOWN" if step == 1 else "UP")
 
-        # 4. 填入始发站出发时间
-        self.table.setItem(start_idx, 3, QTableWidgetItem(current_time.toString("HH:mm")))
+        self.table.setItem(start_idx, 5, QTableWidgetItem(current_time.toString("HH:mm")))
 
-        # 5. 遍历区间，累加标准运行时分并填入中间站
         for i in range(start_idx, end_idx, step):
             from_station = self.stations[i]
             to_station = self.stations[i + step]
 
-            # 在区间表中查找运行时分（兼容上下行存储顺序）
             mins = self.section_times.get((from_station.id, to_station.id))
             if mins is None:
                 mins = self.section_times.get((to_station.id, from_station.id))
-
             if mins is None:
-                mins = 10  # 万一数据库里漏了某个区间，兜底按10分钟算
+                mins = 10
 
-            # 加上运行时分
             current_time = current_time.addSecs(mins * 60)
             next_idx = i + step
-            time_str = current_time.toString("HH:mm")
+            arr_str = current_time.toString("HH:mm")
 
             if next_idx == end_idx:
-                # 如果是终到站，只填写“计划到达”，并反填到顶部面板
-                self.table.setItem(next_idx, 2, QTableWidgetItem(time_str))
-                self.le_end_time.setText(time_str)
+                self.table.setItem(next_idx, 4, QTableWidgetItem(arr_str))
+                self.le_end_time.setText(arr_str)
             else:
-                # 如果是中间站，默认为“通过”，到达和出发时间相同
-                self.table.setItem(next_idx, 2, QTableWidgetItem(time_str))
-                self.table.setItem(next_idx, 3, QTableWidgetItem(time_str))
+                self.table.setItem(next_idx, 4, QTableWidgetItem(arr_str))
+
+                chk_widget = self.table.cellWidget(next_idx, 1)
+                cb_stop = chk_widget.layout().itemAt(0).widget()
+                if cb_stop.isChecked():
+                    sb_duration = self.table.cellWidget(next_idx, 2)
+                    stop_mins = sb_duration.value()
+                    current_time = current_time.addSecs(stop_mins * 60)
+                    dep_str = current_time.toString("HH:mm")
+                    self.table.setItem(next_idx, 5, QTableWidgetItem(dep_str))
+                else:
+                    self.table.setItem(next_idx, 5, QTableWidgetItem(arr_str))
 
     def _bold_font(self):
         font = self.font()
@@ -236,24 +238,21 @@ class TrainPropertyDialog(QDialog):
         stops_data = []
         for i in range(self.table.rowCount()):
             station_id = self.table.item(i, 0).data(Qt.UserRole)
-            cb_track = self.table.cellWidget(i, 1)
+
+            cb_track = self.table.cellWidget(i, 3)
             track_str = cb_track.currentText() if cb_track else "正线"
 
-            plan_arr = self.table.item(i, 2).text().strip()
-            plan_dep = self.table.item(i, 3).text().strip()
-            act_arr = self.table.item(i, 4).text().strip()
-            act_dep = self.table.item(i, 5).text().strip()
+            plan_arr = self.table.item(i, 4).text().strip()
+            plan_dep = self.table.item(i, 5).text().strip()
 
-            if not plan_arr and not plan_dep and not act_arr and not act_dep:
+            if not plan_arr and not plan_dep:
                 continue
 
             stops_data.append({
                 "station_id": station_id,
                 "track": track_str,
                 "planned_arrival": plan_arr,
-                "planned_departure": plan_dep,
-                "actual_arrival": act_arr,
-                "actual_departure": act_dep
+                "planned_departure": plan_dep
             })
 
         return {

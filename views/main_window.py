@@ -1,6 +1,6 @@
 # views/main_window.py
-from PyQt5.QtWidgets import QMainWindow, QAction, QCheckBox, QVBoxLayout, QWidget, QHBoxLayout, QMessageBox, \
-    QInputDialog
+from PyQt5.QtWidgets import QMainWindow, QAction, QCheckBox, QVBoxLayout, QWidget, QHBoxLayout, QMessageBox, QDialog, \
+    QLabel, QLineEdit, QPushButton
 from PyQt5.QtCore import Qt
 from .canvas_widget import TrainGraphCanvas
 
@@ -16,7 +16,7 @@ class MainWindow(QMainWindow):
         self.canvas.controller = controller
 
     def init_ui(self):
-        self.setWindowTitle("列车运行图仿真程序 —— 智能控制中心")
+        self.setWindowTitle("列车运行图仿真程序")
         self.setGeometry(100, 100, 1200, 800)
 
         central_widget = QWidget()
@@ -27,9 +27,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.canvas)
 
         checkbox_layout = QHBoxLayout()
-        self.cb_plan = QCheckBox("显示计划线 (红色/数据库)")
+        self.cb_plan = QCheckBox("显示计划线")
         self.cb_plan.setChecked(True)
-        self.cb_actual = QCheckBox("显示实际线 (蓝色/实迹库)")
+        self.cb_actual = QCheckBox("显示实际线")
         self.cb_actual.setChecked(True)
 
         self.cb_plan.stateChanged.connect(self.on_plan_display_changed)
@@ -48,27 +48,30 @@ class MainWindow(QMainWindow):
         # 计划图操作
         edit_menu = menubar.addMenu("计划图操作")
 
-        search_action = QAction("查询定位车次...", self)
-        search_action.triggered.connect(self.open_search_dialog)
-        edit_menu.addAction(search_action)
-
+        import_action = QAction("读取图定计划...", self)
+        import_action.triggered.connect(self.on_import_plans)
+        edit_menu.addAction(import_action)
         edit_menu.addSeparator()
 
-        add_action = QAction("新增计划线", self)
+        search_action = QAction("车次号查询...", self)
+        search_action.triggered.connect(self.open_search_dialog)
+        edit_menu.addAction(search_action)
+        edit_menu.addSeparator()
+
+        add_action = QAction("加开列车", self)
         add_action.triggered.connect(self.on_add_train)
         edit_menu.addAction(add_action)
 
         delete_action = QAction("删除选定线", self)
         delete_action.triggered.connect(self.on_delete)
         edit_menu.addAction(delete_action)
-
         edit_menu.addSeparator()
 
         report_action = QAction("人工报点", self)
         report_action.triggered.connect(self.on_manual_report)
         edit_menu.addAction(report_action)
-
         edit_menu.addSeparator()
+
         save_action = QAction("保存计划运行图", self)
         save_action.triggered.connect(self.on_save)
         edit_menu.addAction(save_action)
@@ -86,25 +89,58 @@ class MainWindow(QMainWindow):
         train_num_action = QAction("修改车次号", self)
         train_num_action.triggered.connect(self.on_modify_train_num)
         adj_menu.addAction(train_num_action)
-
         adj_menu.addSeparator()
+
         full_schedule_action = QAction("修改全线时刻表", self)
         full_schedule_action.triggered.connect(self.on_modify_full_schedule)
         adj_menu.addAction(full_schedule_action)
 
         # 智能辅助决策
         ai_menu = menubar.addMenu("智能辅助决策")
-        delay_action = QAction("模拟突发晚点 (触发 GA 调整)...", self)
+        delay_action = QAction("模拟突发晚点...", self)
         delay_action.triggered.connect(self.on_simulate_delay)
         ai_menu.addAction(delay_action)
 
+    def on_import_plans(self):
+        if self.controller and hasattr(self.controller, 'on_import_plans'):
+            self.controller.on_import_plans()
+
+    # 核心修改：摒弃系统底层的 QInputDialog，采用纯中文定制面板
     def open_search_dialog(self):
-        train_num, ok = QInputDialog.getText(self, "车次查询定位", "请输入要查询定位的车次号:")
-        if ok and train_num.strip():
-            train_num = train_num.strip()
-            success = self.canvas.highlight_and_locate_train(train_num)
-            if not success:
-                QMessageBox.information(self, "查询结果", f"未在当前计划库中查询到车次：{train_num}")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("车次号查询")
+        dialog.resize(300, 120)
+        layout = QVBoxLayout(dialog)
+
+        form_layout = QHBoxLayout()
+        form_layout.addWidget(QLabel("请输入车次号:"))
+        le_train_num = QLineEdit()
+        form_layout.addWidget(le_train_num)
+        layout.addLayout(form_layout)
+
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_cancel = QPushButton("取消")
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+        btn_ok.clicked.connect(dialog.accept)
+        btn_cancel.clicked.connect(dialog.reject)
+
+        if dialog.exec_() == QDialog.Accepted:
+            train_num = le_train_num.text().strip()
+            if train_num:
+                success = self.canvas.highlight_and_locate_train(train_num)
+                if not success:
+                    # 强行重写提示框按钮为中文
+                    msg_box = QMessageBox(self)
+                    msg_box.setWindowTitle("查询结果")
+                    msg_box.setText(f"未查询到车次：{train_num}")
+                    msg_box.setStandardButtons(QMessageBox.Ok)
+                    msg_box.button(QMessageBox.Ok).setText("确定")
+                    msg_box.exec_()
 
     def on_simulate_delay(self):
         if self.controller and hasattr(self.controller, 'on_simulate_delay'):

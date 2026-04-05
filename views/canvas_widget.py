@@ -535,7 +535,7 @@ class TrainGraphCanvas(QGraphicsView):
         line_pen = QPen(QColor(0, 0, 255), 3, Qt.SolidLine)
         base_color = QColor(0, 0, 255)
 
-        for line_data in train_lines:
+        for idx, line_data in enumerate(train_lines):
             path = QPainterPath()
             first_point_drawn = False
             start_coord = None
@@ -551,15 +551,16 @@ class TrainGraphCanvas(QGraphicsView):
                 continue
 
             is_down_train = first_y < last_y
+            stagger_offset = (idx % 3) * 12
 
             if is_down_train:
                 dy_start = -8
                 dy_end = 10
-                y_offset_text = -22
+                y_offset_text = -22 - stagger_offset
             else:
                 dy_start = 8
                 dy_end = -10
-                y_offset_text = 10
+                y_offset_text = 10 + stagger_offset
 
             for point in valid_actual_points:
                 y = self.station_id_to_y(point.station_id)
@@ -701,13 +702,11 @@ class TrainGraphCanvas(QGraphicsView):
             action_report = None
 
             if min_dist < 30 and closest_station_id:
-                station_name = next((s.name for s in self.stations if s.id == closest_station_id), "未知")
-
-                action_report = menu.addAction(f"人工报点 ({station_name})...")
+                action_report = menu.addAction("人工报点...")
                 menu.addSeparator()
 
-                action_param = menu.addAction(f"修改计划线参数 ({station_name})...")
-                action_track = menu.addAction(f"修改接发车股道 ({station_name})...")
+                action_param = menu.addAction("修改计划线参数...")
+                action_track = menu.addAction("修改接发车股道...")
             else:
                 action_param = menu.addAction("修改计划线参数...")
                 action_track = menu.addAction("修改接发车股道...")
@@ -738,7 +737,7 @@ class TrainGraphCanvas(QGraphicsView):
                 if self.controller and hasattr(self.controller, 'on_delete_specific'):
                     self.controller.on_delete_specific(target_plan_line)
         else:
-            action_add = menu.addAction("新增计划线...")
+            action_add = menu.addAction("加开列车...")
             action = menu.exec_(event.globalPos())
             if action == action_add:
                 if self.controller and hasattr(self.controller, 'on_add_train'):
