@@ -70,6 +70,11 @@ class MainWindow(QMainWindow):
         report_action = QAction("人工报点", self)
         report_action.triggered.connect(self.on_manual_report)
         edit_menu.addAction(report_action)
+
+        # ====== 新增：报点记录查看 ======
+        record_action = QAction("报点记录查询", self)
+        record_action.triggered.connect(self.on_report_record)
+        edit_menu.addAction(record_action)
         edit_menu.addSeparator()
 
         save_action = QAction("保存计划运行图", self)
@@ -105,7 +110,6 @@ class MainWindow(QMainWindow):
         if self.controller and hasattr(self.controller, 'on_import_plans'):
             self.controller.on_import_plans()
 
-    # 核心修改：摒弃系统底层的 QInputDialog，采用纯中文定制面板
     def open_search_dialog(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("车次号查询")
@@ -134,7 +138,6 @@ class MainWindow(QMainWindow):
             if train_num:
                 success = self.canvas.highlight_and_locate_train(train_num)
                 if not success:
-                    # 强行重写提示框按钮为中文
                     msg_box = QMessageBox(self)
                     msg_box.setWindowTitle("查询结果")
                     msg_box.setText(f"未查询到车次：{train_num}")
@@ -149,6 +152,10 @@ class MainWindow(QMainWindow):
     def on_manual_report(self):
         if self.controller and hasattr(self.controller, 'on_manual_report'):
             self.controller.on_manual_report()
+
+    def on_report_record(self):
+        if self.controller and hasattr(self.controller, 'open_report_record_dialog'):
+            self.controller.open_report_record_dialog()
 
     def on_plan_display_changed(self, state):
         self.canvas.show_plan_lines = (state == Qt.Checked)

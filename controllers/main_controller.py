@@ -1,6 +1,6 @@
 # controllers/main_controller.py
 from models.database import get_all_stations, get_section_times, save_plan, delete_plan_from_db, load_plans_from_db, \
-    save_manual_report
+    save_manual_report, clear_all_actual_data
 from models.station import Station
 from models.train_line import TrainLine, TrainLinePoint
 from PyQt5.QtCore import QTime
@@ -29,6 +29,7 @@ class MainController:
         self.load_section_times()
         self.conflict_detector = ConflictDetector(self.stations, self.section_times)
 
+        clear_all_actual_data()
         self._reload_lines()
 
     def load_stations(self):
@@ -67,7 +68,6 @@ class MainController:
         from views.select_plan_dialog import SelectPlanDialog
         try:
             self.all_db_plan_lines = load_plans_from_db('plan')
-            # 核心修改：将 self.stations 传入，供弹窗绘制具体的车站名称
             dialog = SelectPlanDialog(self.view, self.all_db_plan_lines, self.selected_train_numbers, self.stations)
             if dialog.exec_() == QDialog.Accepted:
                 self.selected_train_numbers = dialog.get_selected_train_numbers()
@@ -92,8 +92,9 @@ class MainController:
                     is_valid, error_msg = self.conflict_detector.validate_plan_line(line, self.plan_lines)
                     if not is_valid:
                         msg_box = QMessageBox(self.view)
-                        msg_box.setWindowTitle("保存失败 (冲突拦截)")
-                        msg_box.setText(f"无法保存，运行图存在调度冲突：\n\n{error_msg}\n\n请在画布上调整完毕后再行保存。")
+                        msg_box.setWindowTitle("冲突报警")
+                        msg_box.setIcon(QMessageBox.Warning)
+                        msg_box.setText(error_msg)
                         msg_box.setStandardButtons(QMessageBox.Ok)
                         msg_box.button(QMessageBox.Ok).setText("确定")
                         msg_box.exec_()
@@ -134,7 +135,6 @@ class MainController:
     def on_delete_specific(self, train_line):
         if not train_line: return
 
-        # 强制汉化删除确认按钮
         msg_box = QMessageBox(self.view)
         msg_box.setWindowTitle("确认")
         msg_box.setText(f"确定删除车次 {train_line.train_number} 吗？")
@@ -295,6 +295,11 @@ class MainController:
     def on_manual_report(self):
         self.open_manual_report_dialog()
 
+    def open_report_record_dialog(self):
+        from views.report_record_dialog import ReportRecordDialog
+        dialog = ReportRecordDialog(self.view, self.plan_lines, self.actual_lines, self.stations)
+        dialog.exec_()
+
     def detect_and_draw_conflicts(self):
         conflicts = []
         lines = self.plan_lines
@@ -322,17 +327,19 @@ class MainController:
 
                     if arr1 is None or dep1 is None or arr2 is None or dep2 is None: continue
 
-                    if p1.track == p2.track and p1.track != "正线":
-                        if arr1 == dep1: dep1 += 1
-                        if arr2 == dep2: dep2 += 1
+                    # ====== 核心修改：实时渲染拦截也纳入全股道监控 ======
+                    if p1.track == p2.track:
+                        dep_calc1 = dep1 + 1 if arr1 == dep1 else dep1
+                        dep_calc2 = dep2 + 1 if arr2 == dep2 else dep2
 
-                        if max(arr1, arr2) < min(dep1, dep2):
+                        if max(arr1, arr2) < min(dep_calc1, dep_calc2):
                             conflict_mins = max(arr1, arr2)
                             conflicts.append({
                                 'time': QTime(conflict_mins // 60, conflict_mins % 60),
                                 'station_id': s.id,
                                 'msg': f"股道冲突: {p1.track}, {l1.train_number} 与 {l2.train_number}"
                             })
+                    # =================================================
 
                     if l1.direction == l2.direction:
                         if abs(dep1 - dep2) < 3:
@@ -440,7 +447,6 @@ class MainController:
                     t.color = QColor(255, 0, 255)
             self.view.canvas.update_lines()
 
-            # 强制汉化智能调整结果确认按钮
             msg_box = QMessageBox(self.view)
             msg_box.setWindowTitle("智能调整完成")
             msg_box.setText("遗传算法已完成局部重排。\n紫色线条为临时调整方案，是否应用写入？")

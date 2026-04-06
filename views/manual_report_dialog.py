@@ -16,7 +16,7 @@ class ManualReportDialog(QDialog):
         self.load_initial_data()
 
     def init_ui(self):
-        self.setWindowTitle("人工报点 (记入实际运行图)")
+        self.setWindowTitle("人工报点")
         self.resize(320, 220)
         layout = QVBoxLayout(self)
 

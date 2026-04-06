@@ -15,6 +15,15 @@ class TrainPropertyDialog(QDialog):
         self.init_ui()
         self.populate_data()
 
+    def _format_track_name(self, tk, direction="DOWN"):
+        if not tk: return "Ⅰ" if direction == "DOWN" else "Ⅱ"
+        tk = tk.strip()
+        if tk == "正线": return "Ⅰ" if direction == "DOWN" else "Ⅱ"
+        if tk in ["1", "1股", "正线1"]: return "Ⅰ"
+        if tk in ["2", "2股", "正线2"]: return "Ⅱ"
+        if tk.endswith("股"): return tk[:-1]
+        return tk
+
     def init_ui(self):
         self.setWindowTitle("列车属性与时刻表")
         self.resize(850, 650)
@@ -32,6 +41,7 @@ class TrainPropertyDialog(QDialog):
         basic_layout.addWidget(QLabel("方向:"), 0, 2)
         self.cb_direction = QComboBox()
         self.cb_direction.addItems(["DOWN", "UP"])
+        self.cb_direction.currentIndexChanged.connect(self.on_direction_changed)
         basic_layout.addWidget(self.cb_direction, 0, 3)
 
         basic_layout.addWidget(QLabel("开行日期:"), 0, 4)
@@ -93,6 +103,17 @@ class TrainPropertyDialog(QDialog):
         btn_layout.addWidget(self.btn_cancel)
         layout.addLayout(btn_layout)
 
+    def on_direction_changed(self):
+        """当改变方向时，表格里的默认发车股道自动跟着刷新"""
+        direction = self.cb_direction.currentText()
+        for i in range(self.table.rowCount()):
+            cb_track = self.table.cellWidget(i, 3)
+            if cb_track:
+                # 如果当前是旧的默认正线，自动随方向切换
+                curr = cb_track.currentText()
+                if curr in ["Ⅰ", "Ⅱ"]:
+                    cb_track.setCurrentText("Ⅰ" if direction == "DOWN" else "Ⅱ")
+
     def populate_data(self):
         points_dict = {}
         first_valid_point = None
@@ -110,6 +131,8 @@ class TrainPropertyDialog(QDialog):
                         first_valid_point = p
                     last_valid_point = p
 
+        current_direction = self.cb_direction.currentText()
+
         for i, station in enumerate(self.stations):
             item_name = QTableWidgetItem(station.name)
             item_name.setFlags(item_name.flags() & ~Qt.ItemIsEditable)
@@ -117,7 +140,10 @@ class TrainPropertyDialog(QDialog):
             self.table.item(i, 0).setData(Qt.UserRole, station.id)
 
             p = points_dict.get(station.id)
-            track = getattr(p, 'track', '正线') if p else '正线'
+
+            raw_track = getattr(p, 'track', None)
+            track = self._format_track_name(raw_track, current_direction)
+
             plan_arr = p.planned_arrival.toString("HH:mm") if p and p.planned_arrival else ""
             plan_dep = p.planned_departure.toString("HH:mm") if p and p.planned_departure else ""
 
@@ -146,7 +172,12 @@ class TrainPropertyDialog(QDialog):
             self.table.setCellWidget(i, 2, sb_duration)
 
             cb_track = QComboBox()
-            cb_track.addItems(station.tracks)
+            # 从车站配置中获取规范的股道列表（已剔除"正线"）
+            tracks_list = list(station.tracks) if station.tracks else ["Ⅰ", "Ⅱ", "3", "4", "5"]
+            cb_track.addItems(tracks_list)
+
+            if track not in tracks_list:
+                cb_track.addItem(track)
             cb_track.setCurrentText(track)
             self.table.setCellWidget(i, 3, cb_track)
 
@@ -195,6 +226,7 @@ class TrainPropertyDialog(QDialog):
 
         step = 1 if start_idx < end_idx else -1
         self.cb_direction.setCurrentText("DOWN" if step == 1 else "UP")
+        self.on_direction_changed()  # 更新默认股道
 
         self.table.setItem(start_idx, 5, QTableWidgetItem(current_time.toString("HH:mm")))
 
@@ -236,11 +268,13 @@ class TrainPropertyDialog(QDialog):
 
     def get_data(self):
         stops_data = []
+        direction = self.cb_direction.currentText()
+
         for i in range(self.table.rowCount()):
             station_id = self.table.item(i, 0).data(Qt.UserRole)
 
             cb_track = self.table.cellWidget(i, 3)
-            track_str = cb_track.currentText() if cb_track else "正线"
+            track_str = cb_track.currentText() if cb_track else ("Ⅰ" if direction == "DOWN" else "Ⅱ")
 
             plan_arr = self.table.item(i, 4).text().strip()
             plan_dep = self.table.item(i, 5).text().strip()
@@ -257,7 +291,7 @@ class TrainPropertyDialog(QDialog):
 
         return {
             "train_number": self.le_train_number.text(),
-            "direction": self.cb_direction.currentText(),
+            "direction": direction,
             "date": self.le_date.text(),
             "stops": stops_data
         }
