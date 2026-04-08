@@ -327,7 +327,6 @@ class MainController:
 
                     if arr1 is None or dep1 is None or arr2 is None or dep2 is None: continue
 
-                    # ====== 核心修改：实时渲染拦截也纳入全股道监控 ======
                     if p1.track == p2.track:
                         dep_calc1 = dep1 + 1 if arr1 == dep1 else dep1
                         dep_calc2 = dep2 + 1 if arr2 == dep2 else dep2
@@ -335,17 +334,16 @@ class MainController:
                         if max(arr1, arr2) < min(dep_calc1, dep_calc2):
                             conflict_mins = max(arr1, arr2)
                             conflicts.append({
-                                'time': QTime(conflict_mins // 60, conflict_mins % 60),
+                                'time': QTime((conflict_mins // 60) % 24, conflict_mins % 60),
                                 'station_id': s.id,
                                 'msg': f"股道冲突: {p1.track}, {l1.train_number} 与 {l2.train_number}"
                             })
-                    # =================================================
 
                     if l1.direction == l2.direction:
                         if abs(dep1 - dep2) < 3:
                             conflict_mins = min(dep1, dep2)
                             conflicts.append({
-                                'time': QTime(conflict_mins // 60, conflict_mins % 60),
+                                'time': QTime((conflict_mins // 60) % 24, conflict_mins % 60),
                                 'station_id': s.id,
                                 'msg': f"追踪间隔过小: {l1.train_number} 与 {l2.train_number}"
                             })
@@ -374,7 +372,10 @@ class MainController:
         from views.delay_simulation_dialog import DelaySimulationDialog
         from controllers.ga_optimizer import GAOptimizer
 
-        dialog = DelaySimulationDialog(self.view, self.plan_lines, self.stations)
+        # 将模拟时间传给对话框用于过滤历史车站
+        current_time = self.view.canvas.simulated_current_time
+        dialog = DelaySimulationDialog(self.view, self.plan_lines, self.stations, current_time)
+
         if dialog.exec_() == QDialog.Accepted:
             data = dialog.get_data()
             target_train_num = data['train_num']
@@ -431,7 +432,7 @@ class MainController:
                 actual_dep_mins = max(ready_to_dep, last_departure_mins + 3)
                 extra_delay = actual_dep_mins - ready_to_dep
 
-                curr_p.planned_departure = QTime(actual_dep_mins // 60, actual_dep_mins % 60)
+                curr_p.planned_departure = QTime((actual_dep_mins // 60) % 24, actual_dep_mins % 60)
                 last_departure_mins = actual_dep_mins
 
                 idx = t.points.index(next_p)
@@ -442,22 +443,28 @@ class MainController:
 
             original_lines = self.plan_lines
             self.plan_lines = temp_lines
+
+            # ================== 颜色分配核心修改 ==================
             for t in self.plan_lines:
                 if t in affected_trains:
-                    t.color = QColor(255, 0, 255)
+                    # 分配蓝色并记录从哪个站开始分割
+                    t.adjusted_color = QColor(0, 80, 255)
+                    t.adjusted_from_station = station_id
             self.view.canvas.update_lines()
 
             msg_box = QMessageBox(self.view)
             msg_box.setWindowTitle("智能调整完成")
-            msg_box.setText("遗传算法已完成局部重排。\n紫色线条为临时调整方案，是否应用写入？")
+            msg_box.setText("遗传算法已完成局部重排。\n蓝色线条为受到晚点影响且被调整的区段，是否应用写入？")
             msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
             msg_box.button(QMessageBox.Yes).setText("确定")
             msg_box.button(QMessageBox.No).setText("取消")
             reply = msg_box.exec_()
 
             if reply == QMessageBox.Yes:
+                # 确认后清除调整颜色标记，恢复正常显示
                 for t in self.plan_lines:
-                    if hasattr(t, 'color'): del t.color
+                    if hasattr(t, 'adjusted_color'): del t.adjusted_color
+                    if hasattr(t, 'adjusted_from_station'): del t.adjusted_from_station
                 self.view.canvas.update_lines()
                 self.on_save()
             else:

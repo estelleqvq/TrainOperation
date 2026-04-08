@@ -3,10 +3,11 @@ from PyQt5.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QComboBox, QSpinB
 
 
 class DelaySimulationDialog(QDialog):
-    def __init__(self, parent, plan_lines, stations):
+    def __init__(self, parent, plan_lines, stations, current_time):
         super().__init__(parent)
         self.plan_lines = plan_lines
         self.stations = stations
+        self.current_time = current_time
         self.station_map = {s.id: s for s in stations}
         self.init_ui()
 
@@ -52,12 +53,24 @@ class DelaySimulationDialog(QDialog):
         self.cb_station.clear()
         train_num = self.cb_train.currentData()
         train = next((t for t in self.plan_lines if t.train_number == train_num), None)
+
+        c_mins = self.current_time.hour() * 60 + self.current_time.minute()
+        if c_mins < 1080: c_mins += 1440
+
         if train:
             for i in range(len(train.points) - 1):
                 p = train.points[i]
-                st = self.station_map.get(p.station_id)
-                if st:
-                    self.cb_station.addItem(st.name, p.station_id)
+                node_time = p.planned_arrival or p.planned_departure
+                if not node_time: continue
+
+                n_mins = node_time.hour() * 60 + node_time.minute()
+                if n_mins < 1080: n_mins += 1440
+
+                # 只有计划到达时间大于当前模拟时间的车站才可以引发晚点调整
+                if n_mins >= c_mins:
+                    st = self.station_map.get(p.station_id)
+                    if st:
+                        self.cb_station.addItem(st.name, p.station_id)
 
     def get_data(self):
         return {

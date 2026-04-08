@@ -1,7 +1,7 @@
 # views/canvas_widget.py
 import sys
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsPathItem, QMenu, \
-    QGraphicsItem
+    QGraphicsItem, QMessageBox
 from PyQt5.QtCore import Qt, QTime, QRectF, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont, QPainterPath, QBrush, QPainterPathStroker
 
@@ -21,10 +21,14 @@ class TrainGraphCanvas(QGraphicsView):
         self.left_margin = 70
         self.right_margin = 50
 
-        self.min_minutes = 7 * 60
-        self.max_minutes = 17 * 60
+        # 修改为 18:00 (18*60=1080) 到次日 18:00 (1080+1440=2520)
+        self.min_minutes = 1080
+        self.max_minutes = 2520
 
-        self.simulated_current_time = QTime(7, 30)
+        self.simulated_current_time = QTime(6, 0)
+        self.base_date = "2026年4月7日"
+        self.shift_info_text = None
+
         self.current_time_line = None
         self.current_time_text = None
 
@@ -60,8 +64,9 @@ class TrainGraphCanvas(QGraphicsView):
 
     def advance_time(self):
         self.simulated_current_time = self.simulated_current_time.addSecs(60)
-        if self.simulated_current_time.hour() >= 23 and self.simulated_current_time.minute() >= 59:
-            self.time_timer.stop()
+        # 跨越次日 18:00 停止
+        if self.simulated_current_time.hour() == 17 and self.simulated_current_time.minute() >= 59:
+            pass  # 这里可以根据实际逻辑决定是否停止，原来是23:59
         self.update_current_time_indicator()
 
     def update_current_time_indicator(self):
@@ -157,6 +162,19 @@ class TrainGraphCanvas(QGraphicsView):
             line = self.current_time_line.line()
             self.current_time_line.setLine(line.x1(), target_line_scene_y, line.x2(), line.y2())
 
+        # 更新班计划文字
+        if hasattr(self, 'shift_info_text') and self.shift_info_text:
+            curr_hour = self.simulated_current_time.hour()
+            if 18 <= curr_hour or curr_hour < 6:
+                shift_str = "第1班"
+            else:
+                shift_str = "第2班"
+            self.shift_info_text.setText(f"{self.base_date}  {shift_str}")
+
+            shift_x = self.mapToScene(10, 0).x()
+            shift_y = self.mapToScene(0, 45).y()
+            self.shift_info_text.setPos(shift_x, shift_y)
+
     def update_lod(self):
         if not hasattr(self, 'minute_items'):
             return
@@ -197,7 +215,10 @@ class TrainGraphCanvas(QGraphicsView):
         if view_width <= 0 or view_height <= 0:
             view_width = 1000
             view_height = 600
-        self.scene.setSceneRect(0, 0, view_width, view_height)
+
+        # 将宽度放大 24/5 倍，使得视口默认显示约 5 小时的宽度，并生成滚动条
+        total_width = view_width * (24.0 / 5.0)
+        self.scene.setSceneRect(0, 0, total_width, view_height)
 
     def resizeEvent(self, event):
         self.update_scene_rect()
@@ -317,7 +338,8 @@ class TrainGraphCanvas(QGraphicsView):
 
         for hour in range(start_hour, end_hour + 1):
             x = plot_left + ((hour * 60 - self.min_minutes) / total_minutes) * plot_width
-            text_top = QGraphicsSimpleTextItem(str(hour))
+            display_hour = hour % 24
+            text_top = QGraphicsSimpleTextItem(f"{display_hour:02d}:00")
             text_top.setFont(font_time_large)
             rect_top = text_top.boundingRect()
             orig_x = x - rect_top.width() / 2
@@ -328,6 +350,13 @@ class TrainGraphCanvas(QGraphicsView):
             text_top.setZValue(30)
             self.scene.addItem(text_top)
             self.time_texts.append(text_top)
+
+        self.shift_info_text = QGraphicsSimpleTextItem("")
+        self.shift_info_text.setFont(QFont("Arial", 11, QFont.Bold))
+        self.shift_info_text.setBrush(QBrush(QColor(0, 100, 200)))
+        self.shift_info_text.setZValue(50)
+        self.shift_info_text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.scene.addItem(self.shift_info_text)
 
         self.update_floating_axes()
 
@@ -360,21 +389,34 @@ class TrainGraphCanvas(QGraphicsView):
 
             if is_highlighted:
                 base_color = QColor(255, 0, 0)
+                adj_color = None
+                adj_station = None
                 pen_width = 4
                 z_line = 10
                 z_text = 11
             else:
                 base_color = getattr(line_data, 'color', QColor(255, 0, 0))
+                # 提取智能调整的高亮蓝以及分割触发站
+                adj_color = getattr(line_data, 'adjusted_color', None)
+                adj_station = getattr(line_data, 'adjusted_from_station', None)
+
                 pen_width = 3 if is_selected else 1
                 z_line = 5 if is_selected else 3
                 z_text = 6 if is_selected else 4
 
-            line_pen = QPen(base_color, pen_width, Qt.SolidLine)
+            pen_normal = QPen(base_color, pen_width, Qt.SolidLine)
+            pen_adj = QPen(adj_color, pen_width, Qt.SolidLine) if adj_color else None
 
-            path = QPainterPath()
+            path_normal = QPainterPath()
+            path_adj = QPainterPath()
+
+            current_path = path_normal
+            current_color = base_color
+
             first_point_drawn = False
             start_coord = None
             end_coord = None
+            origin_color = base_color
 
             valid_points = [p for p in line_data.points if p.planned_arrival or p.planned_departure]
             if len(valid_points) < 2:
@@ -414,7 +456,13 @@ class TrainGraphCanvas(QGraphicsView):
                 is_end = (i == len(valid_points) - 1)
 
                 if not first_point_drawn:
-                    path.moveTo(x_dep, y)
+                    # 如果一开始就是调整站，直接换蓝色画笔
+                    if adj_station and point.station_id == adj_station:
+                        current_path = path_adj
+                        current_color = adj_color
+                    origin_color = current_color
+
+                    current_path.moveTo(x_dep, y)
                     start_coord = (x_dep, y)
                     first_point_drawn = True
                 else:
@@ -435,7 +483,7 @@ class TrainGraphCanvas(QGraphicsView):
                                 self.train_line_items.append(item_pass)
 
                                 s_min_rounded = int(round(prev_min_dep + ratio * (min_arr - prev_min_dep)))
-                                s_time = QTime(s_min_rounded // 60, s_min_rounded % 60)
+                                s_time = QTime((s_min_rounded // 60) % 24, s_min_rounded % 60)
                                 line_data.handles.append({
                                     'type': 'pass', 'x': sx, 'y': sy,
                                     'station_id': station.id, 'point_ref': None, 'time': s_time
@@ -445,7 +493,8 @@ class TrainGraphCanvas(QGraphicsView):
                             font_digit = QFont("Arial", 7)
                             text_digit = QGraphicsSimpleTextItem(digit)
                             text_digit.setFont(font_digit)
-                            text_digit.setBrush(QBrush(base_color))
+                            # 这里动态使用 current_color，使其跟随当前区段颜色
+                            text_digit.setBrush(QBrush(current_color))
                             text_digit.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                             text_digit.setPos(sx + 2, sy - 14 if is_down_train else sy + 2)
                             text_digit.setZValue(z_text)
@@ -453,16 +502,23 @@ class TrainGraphCanvas(QGraphicsView):
                             self.train_line_items.append(text_digit)
                             self.minute_items.append((text_digit, is_important))
 
-                    path.lineTo(x_arr, y)
+                    # 连线到到达点
+                    current_path.lineTo(x_arr, y)
+
+                    # 核心切割逻辑：如果该站是调整触发站，从到达点后开始换新的蓝色画笔
+                    if adj_station and point.station_id == adj_station:
+                        current_path = path_adj
+                        current_color = adj_color
+                        current_path.moveTo(x_arr, y)
+
                     if x_arr != x_dep:
-                        path.lineTo(x_dep, y)
+                        current_path.lineTo(x_dep, y)
 
                 if i == len(valid_points) - 1:
                     end_coord = (x_arr, y)
 
                 if is_selected:
                     handle_size = 6
-
                     if t_arr and not is_start:
                         rect_arr = QRectF(x_arr - handle_size / 2, y - handle_size / 2, handle_size, handle_size)
                         item_arr = self.scene.addRect(rect_arr, QPen(Qt.black, 1), QBrush(Qt.white))
@@ -494,7 +550,7 @@ class TrainGraphCanvas(QGraphicsView):
                         digit = str(t_arr.minute() % 10)
                         text_digit = QGraphicsSimpleTextItem(digit)
                         text_digit.setFont(font_digit)
-                        text_digit.setBrush(QBrush(base_color))
+                        text_digit.setBrush(QBrush(current_color))
                         text_digit.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                         text_digit.setPos(x_arr + 2, y - 14 if is_down_train else y + 2)
                         text_digit.setZValue(z_text)
@@ -506,7 +562,7 @@ class TrainGraphCanvas(QGraphicsView):
                         arr_digit = str(t_arr.minute() % 10)
                         text_arr = QGraphicsSimpleTextItem(arr_digit)
                         text_arr.setFont(font_digit)
-                        text_arr.setBrush(QBrush(base_color))
+                        text_arr.setBrush(QBrush(current_color))
                         text_arr.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                         text_arr.setPos(x_arr + 2, y - 14 if is_down_train else y + 2)
                         text_arr.setZValue(z_text)
@@ -517,7 +573,7 @@ class TrainGraphCanvas(QGraphicsView):
                         dep_digit = str(t_dep.minute() % 10)
                         text_dep = QGraphicsSimpleTextItem(dep_digit)
                         text_dep.setFont(font_digit)
-                        text_dep.setBrush(QBrush(base_color))
+                        text_dep.setBrush(QBrush(current_color))
                         text_dep.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
                         text_dep.setPos(x_dep - 8, y + 2 if is_down_train else y - 14)
                         text_dep.setZValue(z_text)
@@ -529,85 +585,89 @@ class TrainGraphCanvas(QGraphicsView):
                 prev_y = y
                 prev_min_dep = min_dep
 
-            if not path.isEmpty():
-                path_item = self.scene.addPath(path, line_pen)
-                hit_path = QPainterPathStroker()
-                hit_path.setWidth(10)
-                shape_path = hit_path.createStroke(path)
-                path_item.setZValue(z_line)
-                path_item.setData(0, line_data)
-                self.train_line_items.append(path_item)
+            # 遍历结束，根据切割情况分别绘制前/后段
+            if not path_normal.isEmpty():
+                path_item1 = self.scene.addPath(path_normal, pen_normal)
+                path_item1.setZValue(z_line)
+                path_item1.setData(0, line_data)
+                self.train_line_items.append(path_item1)
 
-                if start_coord and end_coord:
-                    # ================= 核心修复：彻底剔除错位计算，绝对贴合 T 形起点 =================
-                    if is_down_train:
-                        origin_coord = start_coord
-                        dest_coord = end_coord
-                        dy_origin = -8
-                        dy_dest = 10
-                        arrow_sign = 1
-                        y_offset_text = -22
-                    else:
-                        origin_coord = end_coord
-                        dest_coord = start_coord
-                        dy_origin = 8
-                        dy_dest = -10
-                        arrow_sign = -1
-                        y_offset_text = 10
+            if path_adj and not path_adj.isEmpty() and pen_adj:
+                path_item2 = self.scene.addPath(path_adj, pen_adj)
+                path_item2.setZValue(z_line)
+                path_item2.setData(0, line_data)
+                self.train_line_items.append(path_item2)
 
-                    cx, cy = origin_coord
-                    t_width = 12 if is_important else 10
-                    v_line1 = self.scene.addLine(cx, cy, cx, cy + dy_origin, line_pen)
-                    v_line1.setZValue(z_line)
-                    v_line1.setData(0, line_data)
-                    self.train_line_items.append(v_line1)
+            # 绘制始发/终点信息（两端可能颜色不同，分别读取 origin_color 和 current_color）
+            if start_coord and end_coord:
+                if is_down_train:
+                    origin_coord = start_coord
+                    dest_coord = end_coord
+                    dy_origin = -8
+                    dy_dest = 10
+                    arrow_sign = 1
+                    y_offset_text = -22
+                else:
+                    origin_coord = end_coord
+                    dest_coord = start_coord
+                    dy_origin = 8
+                    dy_dest = -10
+                    arrow_sign = -1
+                    y_offset_text = 10
 
-                    t_line = self.scene.addLine(cx - t_width / 2, cy + dy_origin, cx + t_width / 2, cy + dy_origin,
-                                                QPen(base_color, pen_width + 1, Qt.SolidLine))
-                    t_line.setZValue(z_line + 1)
-                    t_line.setData(0, line_data)
-                    self.train_line_items.append(t_line)
+                cx, cy = origin_coord
+                t_width = 12 if is_important else 10
+                pen_orig = QPen(origin_color, pen_width, Qt.SolidLine)
+                v_line1 = self.scene.addLine(cx, cy, cx, cy + dy_origin, pen_orig)
+                v_line1.setZValue(z_line)
+                v_line1.setData(0, line_data)
+                self.train_line_items.append(v_line1)
 
-                    # 完美计算文字的包围盒，确保绝对居中并在发车线上方/下方
-                    text = QGraphicsSimpleTextItem(line_data.train_number)
-                    font = QFont("Arial", 8, QFont.Bold)
-                    if is_important: font.setPointSize(9)
-                    text.setFont(font)
-                    text.setBrush(QBrush(base_color))
-                    text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                t_line = self.scene.addLine(cx - t_width / 2, cy + dy_origin, cx + t_width / 2, cy + dy_origin,
+                                            QPen(origin_color, pen_width + 1, Qt.SolidLine))
+                t_line.setZValue(z_line + 1)
+                t_line.setData(0, line_data)
+                self.train_line_items.append(t_line)
 
-                    rect_text = text.boundingRect()
-                    text.setPos(cx - rect_text.width() / 2, cy + y_offset_text)
-                    text.setZValue(z_text)
-                    text.setData(0, line_data)
-                    self.scene.addItem(text)
-                    self.train_line_items.append(text)
-                    # ==============================================================================
+                text = QGraphicsSimpleTextItem(line_data.train_number)
+                font = QFont("Arial", 8, QFont.Bold)
+                if is_important: font.setPointSize(9)
+                text.setFont(font)
+                text.setBrush(QBrush(origin_color))
+                text.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
 
-                    ex, ey = dest_coord
-                    arrow_size = 10 if is_important else 8
-                    v_line2 = self.scene.addLine(ex, ey, ex, ey + dy_dest, line_pen)
-                    v_line2.setZValue(z_line)
-                    v_line2.setData(0, line_data)
-                    self.train_line_items.append(v_line2)
+                rect_text = text.boundingRect()
+                text.setPos(cx - rect_text.width() / 2, cy + y_offset_text)
+                text.setZValue(z_text)
+                text.setData(0, line_data)
+                self.scene.addItem(text)
+                self.train_line_items.append(text)
 
-                    arrow_path = QPainterPath()
-                    tip_y = ey + dy_dest
-                    if arrow_sign == 1:
-                        arrow_path.moveTo(ex, tip_y)
-                        arrow_path.lineTo(ex - arrow_size / 2, tip_y - arrow_size)
-                        arrow_path.lineTo(ex + arrow_size / 2, tip_y - arrow_size)
-                    else:
-                        arrow_path.moveTo(ex, tip_y)
-                        arrow_path.lineTo(ex - arrow_size / 2, tip_y + arrow_size)
-                        arrow_path.lineTo(ex + arrow_size / 2, tip_y + arrow_size)
-                    arrow_path.closeSubpath()
+                ex, ey = dest_coord
+                arrow_size = 10 if is_important else 8
+                pen_dest = QPen(current_color, pen_width, Qt.SolidLine)
+                v_line2 = self.scene.addLine(ex, ey, ex, ey + dy_dest, pen_dest)
+                v_line2.setZValue(z_line)
+                v_line2.setData(0, line_data)
+                self.train_line_items.append(v_line2)
 
-                    arrow_item = self.scene.addPath(arrow_path, QPen(base_color, 1),
-                                                    QBrush(Qt.white if not is_important else QColor(255, 200, 200)))
-                    arrow_item.setZValue(z_line + 1)
-                    arrow_item.setData(0, line_data)
-                    self.train_line_items.append(arrow_item)
+                arrow_path = QPainterPath()
+                tip_y = ey + dy_dest
+                if arrow_sign == 1:
+                    arrow_path.moveTo(ex, tip_y)
+                    arrow_path.lineTo(ex - arrow_size / 2, tip_y - arrow_size)
+                    arrow_path.lineTo(ex + arrow_size / 2, tip_y - arrow_size)
+                else:
+                    arrow_path.moveTo(ex, tip_y)
+                    arrow_path.lineTo(ex - arrow_size / 2, tip_y + arrow_size)
+                    arrow_path.lineTo(ex + arrow_size / 2, tip_y + arrow_size)
+                arrow_path.closeSubpath()
+
+                arrow_item = self.scene.addPath(arrow_path, QPen(current_color, 1),
+                                                QBrush(Qt.white if not is_important else current_color))
+                arrow_item.setZValue(z_line + 1)
+                arrow_item.setData(0, line_data)
+                self.train_line_items.append(arrow_item)
 
     def draw_actual_lines(self, train_lines):
         line_pen = QPen(QColor(220, 20, 20), 4, Qt.SolidLine)
@@ -692,7 +752,6 @@ class TrainGraphCanvas(QGraphicsView):
                     t_line.setZValue(5)
                     self.train_line_items.append(t_line)
 
-                    # ====== 实际线同样精确居中贴合 ======
                     text = QGraphicsSimpleTextItem(line_data.train_number)
                     font = QFont("Arial", 8, QFont.Bold)
                     text.setFont(font)
@@ -703,7 +762,6 @@ class TrainGraphCanvas(QGraphicsView):
                     text.setPos(cx - rect_text.width() / 2, cy + y_offset_text)
                     text.setZValue(6)
                     self.train_line_items.append(text)
-                    # ====================================
 
                     ex, ey = dest_coord
                     arrow_size = 8
@@ -859,6 +917,23 @@ class TrainGraphCanvas(QGraphicsView):
                             best_handle = handle
 
                 if min_dist < 15 and best_handle:
+                    # ============ 时间锁拦截逻辑 ============
+                    handle_time = best_handle['time']
+                    curr_time = self.simulated_current_time
+
+                    h_mins = handle_time.hour() * 60 + handle_time.minute()
+                    c_mins = curr_time.hour() * 60 + curr_time.minute()
+                    if h_mins < 1080: h_mins += 1440
+                    if c_mins < 1080: c_mins += 1440
+
+                    if h_mins <= c_mins:
+                        QMessageBox.warning(self, "操作违规",
+                                            "当前时刻之前的运行线已锁定，不可修改！")
+                        self.dragged_point_idx = None
+                        self.setCursor(Qt.ArrowCursor)
+                        return
+                    # ========================================
+
                     if best_handle['point_ref'] is None:
                         from models.train_line import TrainLinePoint
                         new_p = TrainLinePoint(best_handle['station_id'], best_handle['time'], best_handle['time'])
@@ -940,6 +1015,11 @@ class TrainGraphCanvas(QGraphicsView):
     def time_to_x(self, time):
         if time is None: return None
         minutes = time.hour() * 60 + time.minute()
+
+        # 处理跨越零点
+        if minutes < 1080:
+            minutes += 1440
+
         rect = self.scene.sceneRect()
         plot_left = self.left_margin
         plot_right = rect.width() - self.right_margin

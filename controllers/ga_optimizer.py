@@ -166,43 +166,36 @@ class GAOptimizer:
 
     def _heuristic_repair(self, chromosome, delayed_trains):
         """
-        核心防撞机制：启发式纠错 (剥离 -> 推延 -> 回填)
-        确保同等级不互越，高等级绝对优先
+        修复后的核心防撞机制：启发式纠错
+        严格确保同等级不互越，且绝不破坏染色体基因的唯一性和完整性。
         """
-        high_level_trains = []
-        low_level_trains = []
+        high_pos = []
+        low_pos = []
+        high_vals = []
+        low_vals = []
 
-        for train_idx in chromosome:
+        # 1. 提取当前染色体中，高等级和低等级列车所在的【位置】和【序号】
+        for i, train_idx in enumerate(chromosome):
             train_obj = delayed_trains[train_idx]
             if self._get_train_grade(train_obj.train_number) >= 3:
-                high_level_trains.append(train_idx)
+                high_pos.append(i)
+                high_vals.append(train_idx)
             else:
-                low_level_trains.append(train_idx)
+                low_pos.append(i)
+                low_vals.append(train_idx)
 
+        # 2. 核心修复：分别对高等级和低等级的【序号】进行排序
+        # 因为初始 train_idx 就是按发车时间排好序的，sort() 就能完美保证“同等级先到先发，绝对不互越”
+        high_vals.sort()
+        low_vals.sort()
+
+        # 3. 原位回填：把排好序的列车，塞回到它们原本在染色体中的位置
+        # 这样既修正了同级互越，又保留了 GA 探索出来的“高低等级交互”策略
         repaired_chromosome = [None] * len(chromosome)
-
-        for low_idx in low_level_trains:
-            overtaken_count = 0
-            for i in range(chromosome.index(low_idx)):
-                if chromosome[i] in high_level_trains and chromosome[i] > low_idx:
-                    overtaken_count += 1
-
-            new_pos = low_idx + overtaken_count
-            while new_pos < len(repaired_chromosome) and repaired_chromosome[new_pos] is not None:
-                new_pos += 1
-
-            if new_pos < len(repaired_chromosome):
-                repaired_chromosome[new_pos] = low_idx
-
-        high_level_trains.sort()
-        high_idx = 0
-        for i in range(len(repaired_chromosome)):
-            if repaired_chromosome[i] is None:
-                if high_idx < len(high_level_trains):
-                    repaired_chromosome[i] = high_level_trains[high_idx]
-                    high_idx += 1
-                else:
-                    repaired_chromosome[i] = low_level_trains[0] if low_level_trains else 0
+        for i, pos in enumerate(high_pos):
+            repaired_chromosome[pos] = high_vals[i]
+        for i, pos in enumerate(low_pos):
+            repaired_chromosome[pos] = low_vals[i]
 
         return repaired_chromosome
 
