@@ -77,6 +77,12 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(record_action)
         edit_menu.addSeparator()
 
+        # ====== 新增：阶段计划下发入口 ======
+        issue_action = QAction("下发阶段计划...", self)
+        issue_action.triggered.connect(self.on_issue_stage_plan)
+        edit_menu.addAction(issue_action)
+        edit_menu.addSeparator()
+
         save_action = QAction("保存计划运行图", self)
         save_action.triggered.connect(self.on_save)
         edit_menu.addAction(save_action)
@@ -189,3 +195,8 @@ class MainWindow(QMainWindow):
     def on_modify_full_schedule(self):
         if self.controller and hasattr(self.controller, 'on_modify_full_schedule'):
             self.controller.on_modify_full_schedule()
+
+    # 在 views/main_window.py 底部增加：
+    def on_issue_stage_plan(self):
+        if self.controller and hasattr(self.controller, 'open_plan_issue_dialog'):
+            self.controller.open_plan_issue_dialog()

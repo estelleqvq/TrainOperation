@@ -1,4 +1,5 @@
 # controllers/main_controller.py
+import time  # 用于计算算法运行耗时
 from models.database import get_all_stations, get_section_times, save_plan, delete_plan_from_db, load_plans_from_db, \
     save_manual_report, clear_all_actual_data
 from models.station import Station
@@ -8,7 +9,8 @@ from PyQt5.QtWidgets import QMessageBox, QDialog
 from PyQt5.QtGui import QColor
 
 from controllers.conflict_detector import ConflictDetector
-
+from controllers.ga_optimizer import GAOptimizer
+from controllers.gsa_optimizer import GSAOptimizer # 引入你刚写好的新算法
 
 class MainController:
     def __init__(self, view):
@@ -370,9 +372,8 @@ class MainController:
 
     def on_simulate_delay(self):
         from views.delay_simulation_dialog import DelaySimulationDialog
-        from controllers.ga_optimizer import GAOptimizer
+        import time
 
-        # 将模拟时间传给对话框用于过滤历史车站
         current_time = self.view.canvas.simulated_current_time
         dialog = DelaySimulationDialog(self.view, self.plan_lines, self.stations, current_time)
 
@@ -381,6 +382,7 @@ class MainController:
             target_train_num = data['train_num']
             station_id = data['station_id']
             delay_mins = data['delay_mins']
+            use_gsa = (data['algo_type'] == "GSA")
 
             temp_lines = self._clone_lines(self.plan_lines)
             target_train = next((t for t in temp_lines if t.train_number == target_train_num), None)
@@ -388,23 +390,19 @@ class MainController:
 
             target_pt_idx = next((i for i, p in enumerate(target_train.points) if p.station_id == station_id), -1)
             if target_pt_idx == -1 or target_pt_idx == len(target_train.points) - 1:
-                msg_box = QMessageBox(self.view)
-                msg_box.setWindowTitle("提示")
-                msg_box.setText("所选车站为终点站或无效，无需向后调整。")
-                msg_box.setStandardButtons(QMessageBox.Ok)
-                msg_box.button(QMessageBox.Ok).setText("确定")
-                msg_box.exec_()
+                QMessageBox.information(self.view, "提示", "所选车站为终点站或无效，无需向后调整。")
                 return
 
+            # 1. 注入初始晚点
             target_pt = target_train.points[target_pt_idx]
             next_station_id = target_train.points[target_pt_idx + 1].station_id
-
             target_pt.planned_arrival = self._add_mins_to_qtime(target_pt.planned_arrival, delay_mins)
             if target_pt.planned_departure:
                 target_pt.planned_departure = self._add_mins_to_qtime(target_pt.planned_departure, delay_mins)
             else:
                 target_pt.planned_departure = self._add_mins_to_qtime(target_pt.planned_arrival, 2)
 
+            # 2. 筛选受影响的同向列车
             target_is_down = target_train.points[0].station_id < target_train.points[-1].station_id
             affected_trains = []
             for t in temp_lines:
@@ -420,10 +418,27 @@ class MainController:
 
             affected_trains.sort(key=get_dep_mins)
 
-            optimizer = GAOptimizer(self.stations, self.section_times)
-            optimized_trains = optimizer.optimize_dispatch_order(station_id, next_station_id, affected_trains)
+            # 3. 算法调用与计时
+            if use_gsa:
+                from controllers.gsa_optimizer import GSAOptimizer
+                optimizer = GSAOptimizer(self.stations, self.section_times)
+                algo_name = "遗传模拟退火算法 (GSA)"
+            else:
+                from controllers.ga_optimizer import GAOptimizer
+                optimizer = GAOptimizer(self.stations, self.section_times)
+                algo_name = "单一遗传算法 (GA)"
 
+            start_time = time.time()
+            # 【修复点1】安全接收两个返回值
+            optimized_trains, section_weighted_delay = optimizer.optimize_dispatch_order(station_id, next_station_id,
+                                                                                         affected_trains)
+            duration_sec = time.time() - start_time
+
+            # 4. 时间推演与详细数据采集
             last_departure_mins = -999
+            terminal_weighted_delay = 0.0  # 【修复点2】统一变量名为终点站晚点
+            delay_details = {}  # 采集明细给看板用
+
             for t in optimized_trains:
                 curr_p = next(p for p in t.points if p.station_id == station_id)
                 next_p = next(p for p in t.points if p.station_id == next_station_id)
@@ -441,32 +456,52 @@ class MainController:
                     p.planned_arrival = self._add_mins_to_qtime(p.planned_arrival, extra_delay)
                     p.planned_departure = self._add_mins_to_qtime(p.planned_departure, extra_delay)
 
-            original_lines = self.plan_lines
-            self.plan_lines = temp_lines
+                    # 采集加权数据
+                    prefix = str(t.train_number)[0].upper()
+                    weight = 0.3 if prefix in ['G', 'D'] else 0.1
+                    w_delay = extra_delay * weight
 
-            # ================== 颜色分配核心修改 ==================
+                    if p.station_id not in delay_details:
+                        delay_details[p.station_id] = {}
+                    delay_details[p.station_id][t.train_number] = round(w_delay, 2)
+
+                    if j == len(t.points) - 1:
+                        terminal_weighted_delay += w_delay
+
+            # 5. 更新视图：统一调整部分为蓝色
+            self.plan_lines = temp_lines
             for t in self.plan_lines:
                 if t in affected_trains:
-                    # 分配蓝色并记录从哪个站开始分割
                     t.adjusted_color = QColor(0, 80, 255)
                     t.adjusted_from_station = station_id
             self.view.canvas.update_lines()
 
-            msg_box = QMessageBox(self.view)
-            msg_box.setWindowTitle("智能调整完成")
-            msg_box.setText("遗传算法已完成局部重排。\n蓝色线条为受到晚点影响且被调整的区段，是否应用写入？")
-            msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-            msg_box.button(QMessageBox.Yes).setText("确定")
-            msg_box.button(QMessageBox.No).setText("取消")
-            reply = msg_box.exec_()
+            # 6. 弹出新的看板对话框
+            from views.adjustment_detail_dialog import AdjustmentDetailDialog
+            detail_dialog = AdjustmentDetailDialog(
+                self.view,
+                delay_details,
+                self.stations,
+                algo_name,
+                duration_sec,
+                section_weighted_delay,
+                terminal_weighted_delay
+            )
 
-            if reply == QMessageBox.Yes:
-                # 确认后清除调整颜色标记，恢复正常显示
+            if detail_dialog.exec_() == QDialog.Accepted:
                 for t in self.plan_lines:
                     if hasattr(t, 'adjusted_color'): del t.adjusted_color
                     if hasattr(t, 'adjusted_from_station'): del t.adjusted_from_station
                 self.view.canvas.update_lines()
                 self.on_save()
             else:
-                self.plan_lines = original_lines
-                self.view.canvas.update_lines()
+                self._reload_lines()
+
+    def open_plan_issue_dialog(self):
+        from views.plan_issue_dialog import PlanIssueDialog
+
+        # 获取当前画布上的推演时间，作为计划下发的默认起始时间
+        current_time = self.view.canvas.simulated_current_time
+
+        dialog = PlanIssueDialog(self.view, self.stations, self.plan_lines, current_time)
+        dialog.exec_()

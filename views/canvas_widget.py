@@ -25,7 +25,7 @@ class TrainGraphCanvas(QGraphicsView):
         self.min_minutes = 1080
         self.max_minutes = 2520
 
-        self.simulated_current_time = QTime(6, 0)
+        self.simulated_current_time = QTime(7, 0)
         self.base_date = "2026年4月7日"
         self.shift_info_text = None
 
