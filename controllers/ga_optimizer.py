@@ -11,27 +11,18 @@ class GAOptimizer:
         # ================= 论文推荐的最优参数 =================
         self.POP_SIZE = 101  # 种群大小
         self.MAX_GEN = 300  # 进化代数
-
-        # 自适应概率的基础系数 (依据论文式 4-7, 4-8)
         self.K_C = 0.8  # 基础交叉概率
         self.K_M = 0.1  # 基础变异概率
-        # ======================================================
 
     def optimize_dispatch_order(self, current_station_id, next_station_id, delayed_trains):
-        """
-        单一遗传算法主入口：针对发生晚点的车站，求解去往下一站的最优发车顺序
-        """
         if len(delayed_trains) <= 1:
-            return delayed_trains  # 只有一辆车不需要调整
+            return delayed_trains, 0.0, 0
 
-        # 1. 种群初始化
         population = self._initialize_population(delayed_trains)
-
         best_individual = None
         best_fitness = -1.0
 
         for generation in range(self.MAX_GEN):
-            # 2. 计算适应度
             fitness_list = []
             for ind in population:
                 fit = self._calculate_fitness(ind, current_station_id, next_station_id, delayed_trains)
@@ -44,32 +35,45 @@ class GAOptimizer:
             f_max = max(fitness_list)
             f_avg = sum(fitness_list) / len(fitness_list)
 
-            # 终止条件判断：种群适应度收敛 (论文式 4-6)
             convergence = sum(abs(f - f_avg) for f in fitness_list)
             if convergence <= 0.001:
                 break
 
-            # 3. 轮盘赌选择
             new_population = self._selection(population, fitness_list)
-
-            # 4. 顺序交叉 (含自适应概率)
             new_population = self._crossover(new_population, fitness_list, f_max, f_avg)
-
-            # 5. 两点交换变异 (含自适应概率)
             new_population = self._mutation(new_population, fitness_list, f_max, f_avg)
 
-            # 6. 启发式纠错 (修复违反车站越行约束的非法解)
             for i in range(len(new_population)):
                 new_population[i] = self._heuristic_repair(new_population[i], delayed_trains)
 
-        # 按照最优染色体解码，返回重排后的列车对象列表和区段总加权晚点
-        section_weighted_delay = 0 if best_fitness == 99999.0 else (1.0 / best_fitness)
-        return [delayed_trains[idx] for idx in best_individual], section_weighted_delay
+        # ====== 计算真实的纯晚点时间和波及列车数 (不含惩罚项) ======
+        pure_section_delay = 0.0
+        pure_adjusted_count = 0
+        last_dep = -999
+
+        for train_idx in best_individual:
+            t = delayed_trains[train_idx]
+            w = 0.3 if self._get_train_grade(t.train_number) >= 3 else 0.1
+            cp = next((p for p in t.points if p.station_id == current_station_id), None)
+            np = next((p for p in t.points if p.station_id == next_station_id), None)
+
+            if cp and np:
+                rd = self._time_to_mins(cp.planned_departure)
+                ad = max(rd, last_dep + 3)
+                last_dep = ad
+                rt = self.section_times.get((current_station_id, next_station_id), 4)
+                arr = ad + rt
+                plan_arr = self._time_to_mins(np.planned_arrival)
+                dl = max(0, arr - plan_arr)
+                pure_section_delay += dl * w
+                if dl > 0:
+                    pure_adjusted_count += 1
+
+        return [delayed_trains[idx] for idx in best_individual], pure_section_delay, pure_adjusted_count
 
     def _initialize_population(self, delayed_trains):
-        # 初始发车顺序序列，如 [0, 1, 2, 3]
         base_seq = list(range(len(delayed_trains)))
-        pop = [base_seq.copy()]  # 必须保留一个原始发车顺序作为底座
+        pop = [base_seq.copy()]
         for _ in range(self.POP_SIZE - 1):
             shuffled = base_seq.copy()
             random.shuffle(shuffled)
@@ -79,19 +83,14 @@ class GAOptimizer:
     def _selection(self, population, fitness_list):
         total_fit = sum(fitness_list)
         if total_fit == 0: return population.copy()
-
         cum_probs = []
         current_sum = 0.0
         for f in fitness_list:
             current_sum += f / total_fit
             cum_probs.append(current_sum)
-
         new_pop = []
-        # 精英保留策略：直接把当代适应度最高的个体无损放入下一代
         best_idx = fitness_list.index(max(fitness_list))
         new_pop.append(population[best_idx].copy())
-
-        # 轮盘赌选择剩下的个体
         for _ in range(self.POP_SIZE - 1):
             r = random.random()
             for i, cp in enumerate(cum_probs):
@@ -101,140 +100,97 @@ class GAOptimizer:
         return new_pop
 
     def _crossover(self, population, fitness_list, f_max, f_avg):
-        new_pop = [population[0]]  # 精英个体直接遗传
-
+        new_pop = [population[0]]
         for i in range(1, len(population), 2):
             ind1 = population[i].copy()
             ind2 = population[i + 1].copy() if i + 1 < len(population) else population[1].copy()
-
-            # 计算自适应交叉概率 Pc (论文式 4-7)
             fc = max(fitness_list[i], fitness_list[i + 1] if i + 1 < len(fitness_list) else fitness_list[1])
-            if fc <= f_avg or f_max == f_avg:
-                pc = self.K_C
-            else:
-                pc = self.K_C * (f_max - fc) / (f_max - f_avg)
-
+            pc = self.K_C if (fc <= f_avg or f_max == f_avg) else self.K_C * (f_max - fc) / (f_max - f_avg)
             if random.random() < pc:
-                # 执行顺序交叉 (Order Crossover)
                 pt1, pt2 = sorted(random.sample(range(len(ind1)), 2))
-                child1 = self._order_crossover(ind1, ind2, pt1, pt2)
-                child2 = self._order_crossover(ind2, ind1, pt1, pt2)
-                new_pop.extend([child1, child2])
+                new_pop.extend(
+                    [self._order_crossover(ind1, ind2, pt1, pt2), self._order_crossover(ind2, ind1, pt1, pt2)])
             else:
                 new_pop.extend([ind1, ind2])
-
         return new_pop[:self.POP_SIZE]
 
     def _order_crossover(self, parent1, parent2, pt1, pt2):
         size = len(parent1)
         child = [None] * size
-
-        # 保留交叉点之间的基因
         child[pt1:pt2 + 1] = parent1[pt1:pt2 + 1]
-
-        # 填入剩余基因
         curr_idx = (pt2 + 1) % size
         p2_idx = (pt2 + 1) % size
-
         while None in child:
             if parent2[p2_idx] not in child:
                 child[curr_idx] = parent2[p2_idx]
                 curr_idx = (curr_idx + 1) % size
             p2_idx = (p2_idx + 1) % size
-
         return child
 
     def _mutation(self, population, fitness_list, f_max, f_avg):
-        new_pop = [population[0]]  # 精英不参与变异
-
+        new_pop = [population[0]]
         for i in range(1, len(population)):
-            ind = population[i].copy()
-            fm = fitness_list[i]
-
-            # 自适应变异概率 Pm (论文式 4-8)
-            if fm <= f_avg or f_max == f_avg:
-                pm = self.K_M
-            else:
-                pm = self.K_M * (f_max - fm) / (f_max - f_avg)
-
+            ind, fm = population[i].copy(), fitness_list[i]
+            pm = self.K_M if (fm <= f_avg or f_max == f_avg) else self.K_M * (f_max - fm) / (f_max - f_avg)
             if random.random() < pm:
-                # 执行两点交换变异
                 pt1, pt2 = random.sample(range(len(ind)), 2)
                 ind[pt1], ind[pt2] = ind[pt2], ind[pt1]
-
             new_pop.append(ind)
         return new_pop
 
     def _heuristic_repair(self, chromosome, delayed_trains):
-        """
-        修复后的核心防撞机制：启发式纠错
-        严格确保同等级不互越，且绝不破坏染色体基因的唯一性和完整性。
-        """
-        high_pos = []
-        low_pos = []
-        high_vals = []
-        low_vals = []
-
-        # 1. 提取当前染色体中，高等级和低等级列车所在的【位置】和【序号】
+        high_pos, low_pos, high_vals, low_vals = [], [], [], []
         for i, train_idx in enumerate(chromosome):
             train_obj = delayed_trains[train_idx]
             if self._get_train_grade(train_obj.train_number) >= 3:
-                high_pos.append(i)
+                high_pos.append(i);
                 high_vals.append(train_idx)
             else:
-                low_pos.append(i)
+                low_pos.append(i);
                 low_vals.append(train_idx)
-
-        # 2. 核心修复：分别对高等级和低等级的【序号】进行排序
-        # 因为初始 train_idx 就是按发车时间排好序的，sort() 就能完美保证“同等级先到先发，绝对不互越”
-        high_vals.sort()
+        high_vals.sort();
         low_vals.sort()
-
-        # 3. 原位回填：把排好序的列车，塞回到它们原本在染色体中的位置
-        # 这样既修正了同级互越，又保留了 GA 探索出来的“高低等级交互”策略
-        repaired_chromosome = [None] * len(chromosome)
-        for i, pos in enumerate(high_pos):
-            repaired_chromosome[pos] = high_vals[i]
-        for i, pos in enumerate(low_pos):
-            repaired_chromosome[pos] = low_vals[i]
-
-        return repaired_chromosome
+        repaired = [None] * len(chromosome)
+        for i, pos in enumerate(high_pos): repaired[pos] = high_vals[i]
+        for i, pos in enumerate(low_pos): repaired[pos] = low_vals[i]
+        return repaired
 
     def _calculate_fitness(self, chromosome, current_station_id, next_station_id, delayed_trains):
-        """
-        论文目标函数：区段总加权到达晚点时间的倒数
-        """
         total_weighted_delay = 0.0
+        adjusted_train_count = 0
         last_departure_mins = -999
 
         for train_idx in chromosome:
             train = delayed_trains[train_idx]
             weight = 0.3 if self._get_train_grade(train.train_number) >= 3 else 0.1
-
             curr_pt = next((p for p in train.points if p.station_id == current_station_id), None)
             next_pt = next((p for p in train.points if p.station_id == next_station_id), None)
 
             if not curr_pt or not next_pt: continue
 
-            # 假定此时 planned_departure 已经被注入了初始晚点时间
             ready_to_dep_mins = self._time_to_mins(curr_pt.planned_departure)
-
-            # 追踪间隔约束推算：发车必须留足 3 分钟安全追踪间隔
             actual_dep_mins = max(ready_to_dep_mins, last_departure_mins + 3)
             last_departure_mins = actual_dep_mins
 
-            # 区间最小运行时分约束 (动态查表)
             run_time = self.section_times.get((current_station_id, next_station_id), 4)
             actual_arr_next_mins = actual_dep_mins + run_time
-
             planned_arr_next_mins = self._time_to_mins(next_pt.planned_arrival)
+
             delay = max(0, actual_arr_next_mins - planned_arr_next_mins)
-
             total_weighted_delay += delay * weight
+            if delay > 0:
+                adjusted_train_count += 1
 
-        if total_weighted_delay == 0:
-            return 99999.0  # 无晚点，适应度极大
-        return 1.0 / total_weighted_delay
+        # ================= 多目标优化 =================
+        # 目标1：使得加权晚点总时间尽量小
+        # 目标2：使得晚点列车的数量尽量少
+        W1 = 1.0  # 晚点时间的权重
+        W2 = 50.0  # 晚点列车数的权重
+
+        comprehensive_cost = (W1 * total_weighted_delay) + (W2 * adjusted_train_count)
+
+        if comprehensive_cost == 0: return 99999.0
+        return 1.0 / comprehensive_cost
 
     def _time_to_mins(self, qt):
         return qt.hour() * 60 + qt.minute() if qt else 0
